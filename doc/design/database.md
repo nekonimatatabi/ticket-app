@@ -34,9 +34,9 @@ erDiagram
         bigint event_id FK
         string name
         uint price
-        uint quantity
-        datetime sales_start_at
-        datetime sales_end_at
+        uint capacity
+        datetime sales_starts_at
+        datetime sales_ends_at
     }
     orders {
         bigint id PK
@@ -101,9 +101,11 @@ erDiagram
 | event_id | bigint unsigned | FK → events.id, NOT NULL, INDEX | |
 | name | string(100) | NOT NULL | 例: 一般、学生 |
 | price | unsigned integer | NOT NULL | 円。0 円（無料）を許可 |
-| quantity | unsigned integer | NOT NULL | 定員（販売する総枚数） |
-| sales_start_at | datetime | NOT NULL | 販売開始 |
-| sales_end_at | datetime | NOT NULL | 販売終了。開始より後であることはバリデーションで確認 |
+| capacity | unsigned integer | NOT NULL | 定員（販売する総枚数）。1以上。`order_items.quantity`（購入枚数）と区別するため `capacity` とする |
+| sales_starts_at | datetime | NOT NULL | 販売開始 |
+| sales_ends_at | datetime | NOT NULL | 販売終了。開始より後であることはバリデーションで確認 |
+
+画面の入力は、券種名が50文字以内、価格が 0〜10,000,000 の整数、定員が 1〜100,000 の整数。券種が1つも無いイベントは公開できない。公開中のイベントの最後の券種は削除できない。
 | timestamps | | | |
 
 ### orders
@@ -164,7 +166,7 @@ erDiagram
 残り枚数は列に持たず、そのつど計算する。列で持つと更新漏れで数が狂うため。
 
 ```
-残り枚数 = ticket_types.quantity
+残り枚数 = ticket_types.capacity
          − SUM(order_items.quantity)
            ※ 対象は、その券種の明細のうち、親の orders.status が pending または paid のもの
 ```
@@ -177,7 +179,7 @@ erDiagram
 
 注文を作る前に、次の3つを確認する。1つでも満たさなければエラーを表示し、注文は作らない。
 
-1. 現在時刻が `sales_start_at` 以上、`sales_end_at` 以下である。
+1. 現在時刻が `sales_starts_at` 以上、`sales_ends_at` 以下である（`TicketType::isOnSale()`）。
 2. 選んだ枚数が残り枚数以下である。
 3. イベントが `published` である。
 
@@ -192,7 +194,7 @@ TicketType::query()
     ], 'quantity');
 ```
 
-残り枚数は `quantity - sold_quantity` で求める。
+残り枚数は `capacity - sold_quantity` で求める。
 
 ### 既知の制約
 

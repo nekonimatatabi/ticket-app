@@ -79,6 +79,14 @@ class Event extends Model
         $query->where('starts_at', '>=', now());
     }
 
+    /**
+     * 券種が1つ以上あれば公開できる。
+     */
+    public function canBePublished(): bool
+    {
+        return $this->ticketTypes()->exists();
+    }
+
     public function isPublished(): bool
     {
         return $this->status === EventStatus::Published;

@@ -1,0 +1,429 @@
+<?php
+
+use App\Enums\EventStatus;
+use App\Models\Event;
+use App\Models\TicketType;
+use App\Models\User;
+use Livewire\Features\SupportTesting\Testable;
+use Livewire\Livewire;
+
+function validTicketTypeInput(array $overrides = []): array
+{
+    $input = [
+        'name' => '一般',
+        'price' => 3000,
+        'capacity' => 20,
+        'sales_starts_at' => '2030-04-01T10:00',
+        'sales_ends_at' => '2030-04-30T18:00',
+        ...$overrides,
+    ];
+
+    return collect($input)->mapWithKeys(fn ($value, $field) => ["ticketTypeForm.$field" => $value])->all();
+}
+
+function openEventEditPage(Event $event): Testable
+{
+    return Livewire::actingAs($event->organizer)
+        ->test('pages::organizer.events.edit', ['event' => $event]);
+}
+
+describe('ticket type list', function () {
+    test('shows each ticket type with its price, capacity, and sales status', function () {
+        $event = Event::factory()->create();
+        TicketType::factory()->for($event)->create(['name' => '学生', 'price' => 1500, 'capacity' => 30]);
+
+        $this->actingAs($event->organizer)
+            ->get(route('organizer.events.edit', $event))
+            ->assertOk()
+            ->assertSee('学生')
+            ->assertSee('1,500円')
+            ->assertSee('30枚')
+            ->assertSee('販売中');
+    });
+
+    test('shows a message when the event has no ticket types', function () {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)->assertSee('券種がありません');
+    });
+
+    test('does not list ticket types of other events', function () {
+        $event = Event::factory()->create();
+        TicketType::factory()->create(['name' => '他のイベントの券種']);
+
+        openEventEditPage($event)->assertDontSee('他のイベントの券種');
+    });
+});
+
+describe('adding a ticket type', function () {
+    test('saves a ticket type of the event with integer price and capacity', function () {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->set(validTicketTypeInput(['price' => '3000', 'capacity' => '20']))
+            ->call('saveTicketType')
+            ->assertHasNoErrors()
+            ->assertSet('ticketTypeForm.name', '');
+
+        $ticketType = TicketType::sole();
+
+        expect($ticketType)
+            ->event_id->toBe($event->id)
+            ->name->toBe('一般')
+            ->price->toBe(3000)
+            ->capacity->toBe(20)
+            ->and($ticketType->sales_starts_at->format('Y-m-d H:i'))->toBe('2030-04-01 10:00')
+            ->and($ticketType->sales_ends_at->format('Y-m-d H:i'))->toBe('2030-04-30 18:00');
+    });
+
+    test('allows a free ticket with a price of 0', function () {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->set(validTicketTypeInput(['price' => 0]))
+            ->call('saveTicketType')
+            ->assertHasNoErrors();
+
+        expect(TicketType::sole()->price)->toBe(0);
+    });
+
+    test('accepts a name of exactly 50 characters', function () {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->set(validTicketTypeInput(['name' => str_repeat('あ', 50)]))
+            ->call('saveTicketType')
+            ->assertHasNoErrors();
+
+        expect(TicketType::count())->toBe(1);
+    });
+
+    test('rejects invalid values with the failing rule', function (string $field, int|string $value, string $rule) {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->set(validTicketTypeInput([$field => $value]))
+            ->call('saveTicketType')
+            ->assertHasErrors(["ticketTypeForm.$field" => $rule]);
+
+        expect(TicketType::count())->toBe(0);
+    })->with([
+        'name of 51 characters' => ['name', str_repeat('あ', 51), 'max'],
+        'negative price' => ['price', -1, 'min'],
+        'decimal price' => ['price', '1.5', 'integer'],
+        'price above the limit' => ['price', 10000001, 'max'],
+        'capacity of 0' => ['capacity', 0, 'min'],
+        'decimal capacity' => ['capacity', '2.5', 'integer'],
+        'capacity above the limit' => ['capacity', 100001, 'max'],
+    ]);
+
+    test('shows a validation error instead of failing when price or capacity is emptied', function (string $field) {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->set(validTicketTypeInput([$field => '']))
+            ->call('saveTicketType')
+            ->assertHasErrors(["ticketTypeForm.$field" => 'required']);
+
+        expect(TicketType::count())->toBe(0);
+    })->with(['price', 'capacity']);
+
+    test('rejects a sales end that is not after the sales start', function (string $endsAt) {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->set(validTicketTypeInput(['sales_ends_at' => $endsAt]))
+            ->call('saveTicketType')
+            ->assertHasErrors(['ticketTypeForm.sales_ends_at' => 'after']);
+
+        expect(TicketType::count())->toBe(0);
+    })->with([
+        'before the start' => '2030-03-31T10:00',
+        'equal to the start' => '2030-04-01T10:00',
+    ]);
+
+    test('rejects an empty form with every field required and shows Japanese field names', function () {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->call('saveTicketType')
+            ->assertHasErrors([
+                'ticketTypeForm.name' => 'required',
+                'ticketTypeForm.price' => 'required',
+                'ticketTypeForm.capacity' => 'required',
+                'ticketTypeForm.sales_starts_at' => 'required',
+                'ticketTypeForm.sales_ends_at' => 'required',
+            ])
+            ->assertSee('券種名');
+
+        expect(TicketType::count())->toBe(0);
+    });
+});
+
+describe('editing a ticket type', function () {
+    test('fills the form with the values of the chosen ticket type', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create([
+            'name' => '早割',
+            'price' => 2500,
+            'capacity' => 12,
+            'sales_starts_at' => '2030-03-01 09:30:00',
+            'sales_ends_at' => '2030-03-20 21:00:00',
+        ]);
+
+        openEventEditPage($event)
+            ->call('editTicketType', $ticketType->id)
+            ->assertSet('editingTicketTypeId', $ticketType->id)
+            ->assertSet('ticketTypeForm.name', '早割')
+            ->assertSet('ticketTypeForm.price', 2500)
+            ->assertSet('ticketTypeForm.capacity', 12)
+            ->assertSet('ticketTypeForm.sales_starts_at', '2030-03-01T09:30')
+            ->assertSet('ticketTypeForm.sales_ends_at', '2030-03-20T21:00');
+    });
+
+    test('updates the chosen ticket type without creating a new one', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['name' => '一般', 'price' => 3000]);
+        $untouched = TicketType::factory()->for($event)->create(['name' => '学生', 'price' => 1500]);
+
+        openEventEditPage($event)
+            ->call('editTicketType', $ticketType->id)
+            ->set('ticketTypeForm.name', '一般（改）')
+            ->set('ticketTypeForm.price', '3500')
+            ->call('saveTicketType')
+            ->assertHasNoErrors()
+            ->assertSet('editingTicketTypeId', null)
+            ->assertSet('ticketTypeForm.name', '');
+
+        expect(TicketType::count())->toBe(2)
+            ->and($ticketType->fresh())->name->toBe('一般（改）')->price->toBe(3500)
+            ->and($untouched->fresh())->name->toBe('学生')->price->toBe(1500);
+    });
+
+    test('keeps the ticket type unchanged when the update is invalid', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['name' => '一般']);
+
+        openEventEditPage($event)
+            ->call('editTicketType', $ticketType->id)
+            ->set('ticketTypeForm.capacity', 0)
+            ->call('saveTicketType')
+            ->assertHasErrors(['ticketTypeForm.capacity' => 'min']);
+
+        expect($ticketType->fresh()->capacity)->toBe($ticketType->capacity);
+    });
+
+    test('returns the form to adding mode when editing is cancelled', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create();
+
+        openEventEditPage($event)
+            ->call('editTicketType', $ticketType->id)
+            ->call('cancelTicketTypeEdit')
+            ->assertSet('editingTicketTypeId', null)
+            ->assertSet('ticketTypeForm.name', '')
+            ->assertSet('ticketTypeForm.price', '');
+    });
+});
+
+describe('deleting a ticket type', function () {
+    test('deletes a ticket type of a draft event', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create();
+
+        openEventEditPage($event)->call('deleteTicketType', $ticketType->id);
+
+        expect(TicketType::count())->toBe(0);
+    });
+
+    test('deletes one of several ticket types of a published event', function () {
+        $event = Event::factory()->published()->create();
+        $ticketType = TicketType::factory()->for($event)->create();
+        TicketType::factory()->for($event)->create();
+
+        openEventEditPage($event)->call('deleteTicketType', $ticketType->id);
+
+        expect(TicketType::whereKey($ticketType->id)->exists())->toBeFalse()
+            ->and(TicketType::count())->toBe(1);
+    });
+
+    test('keeps the last ticket type of a published event', function () {
+        $event = Event::factory()->published()->create();
+        $ticketType = TicketType::factory()->for($event)->create();
+
+        openEventEditPage($event)
+            ->call('deleteTicketType', $ticketType->id)
+            ->assertDispatched('toast-show', fn (string $event, array $params) => str_contains(json_encode($params, JSON_UNESCAPED_UNICODE), '最後の券種は削除できません'));
+
+        expect(TicketType::whereKey($ticketType->id)->exists())->toBeTrue();
+    });
+
+    test('resets the form when the ticket type being edited is deleted', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create();
+
+        openEventEditPage($event)
+            ->call('editTicketType', $ticketType->id)
+            ->call('deleteTicketType', $ticketType->id)
+            ->assertSet('editingTicketTypeId', null)
+            ->assertSet('ticketTypeForm.name', '');
+    });
+
+    test('asks for confirmation before deleting', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create();
+
+        openEventEditPage($event)
+            ->assertSeeHtml('wire:confirm="この券種を削除しますか？"');
+    });
+});
+
+describe('publishing and ticket types', function () {
+    test('does not publish an event without ticket types', function () {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->call('togglePublish')
+            ->assertDispatched('toast-show', fn (string $event, array $params) => str_contains(json_encode($params, JSON_UNESCAPED_UNICODE), '券種が1つもないため公開できません'));
+
+        expect($event->fresh()->status)->toBe(EventStatus::Draft);
+    });
+
+    test('publishes an event that has a ticket type', function () {
+        $event = Event::factory()->has(TicketType::factory())->create();
+
+        openEventEditPage($event)->call('togglePublish');
+
+        expect($event->fresh()->status)->toBe(EventStatus::Published);
+    });
+
+    test('returns a published event to draft even if it has no ticket types', function () {
+        $event = Event::factory()->published()->create();
+
+        openEventEditPage($event)->call('togglePublish');
+
+        expect($event->fresh()->status)->toBe(EventStatus::Draft);
+    });
+});
+
+describe('authorization inside the ticket type methods', function () {
+    test('forbids another organizer after the page was opened', function (string $method, bool $needsTicketTypeId) {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['name' => '元の券種名']);
+
+        $component = openEventEditPage($event)
+            ->set(validTicketTypeInput(['name' => '乗っ取られた券種名']));
+
+        $this->actingAs(User::factory()->organizer()->create());
+
+        $component->call($method, ...($needsTicketTypeId ? [$ticketType->id] : []))->assertForbidden();
+
+        expect(TicketType::count())->toBe(1)
+            ->and($ticketType->fresh()->name)->toBe('元の券種名');
+    })->with([
+        'editTicketType' => ['editTicketType', true],
+        'saveTicketType' => ['saveTicketType', false],
+        'deleteTicketType' => ['deleteTicketType', true],
+    ]);
+
+    test('cannot edit or delete a ticket type of another event', function (string $method) {
+        $event = Event::factory()->create();
+        $foreign = TicketType::factory()->create(['name' => '他のイベントの券種']);
+
+        openEventEditPage($event)->call($method, $foreign->id)->assertNotFound();
+
+        expect($foreign->fresh()->name)->toBe('他のイベントの券種');
+    })->with(['editTicketType', 'deleteTicketType']);
+
+    test('cannot update a ticket type of another event by tampering with the editing id', function () {
+        $event = Event::factory()->create();
+        $foreign = TicketType::factory()->create(['name' => '他のイベントの券種']);
+
+        openEventEditPage($event)
+            ->set('editingTicketTypeId', $foreign->id)
+            ->set(validTicketTypeInput(['name' => '書き換え']))
+            ->call('saveTicketType')
+            ->assertNotFound();
+
+        expect($foreign->fresh()->name)->toBe('他のイベントの券種');
+    });
+});
+
+describe('ticket type access by other users', function () {
+    test('returns 403 and adds nothing when another organizer opens the edit page directly', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['name' => '元の券種名']);
+        $otherOrganizer = User::factory()->organizer()->create();
+
+        $this->actingAs($otherOrganizer)
+            ->get(route('organizer.events.edit', $event))
+            ->assertForbidden();
+
+        Livewire::actingAs($otherOrganizer)
+            ->test('pages::organizer.events.edit', ['event' => $event])
+            ->assertForbidden();
+
+        expect(TicketType::count())->toBe(1)
+            ->and($ticketType->fresh()->name)->toBe('元の券種名');
+    });
+
+    test('forbids a user who is no longer an organizer from adding a ticket type', function () {
+        $event = Event::factory()->create();
+
+        $component = openEventEditPage($event)->set(validTicketTypeInput());
+
+        $this->actingAs(User::factory()->create());
+
+        $component->call('saveTicketType')->assertForbidden();
+
+        expect(TicketType::count())->toBe(0);
+    });
+});
+
+describe('ticket type price boundary', function () {
+    test('rejects a negative price with a Japanese message and keeps the existing price', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['price' => 3000]);
+
+        openEventEditPage($event)
+            ->call('editTicketType', $ticketType->id)
+            ->set('ticketTypeForm.price', -1)
+            ->call('saveTicketType')
+            ->assertHasErrors(['ticketTypeForm.price' => 'min'])
+            ->assertSee('価格');
+
+        expect($ticketType->fresh()->price)->toBe(3000)
+            ->and(TicketType::count())->toBe(1);
+    });
+
+    test('allows updating a price to 0', function () {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['price' => 3000]);
+
+        openEventEditPage($event)
+            ->call('editTicketType', $ticketType->id)
+            ->set('ticketTypeForm.price', 0)
+            ->call('saveTicketType')
+            ->assertHasNoErrors();
+
+        expect($ticketType->fresh()->price)->toBe(0);
+    });
+});
+
+describe('publishing after adding a ticket type', function () {
+    test('refuses to publish, then publishes once a ticket type is added', function () {
+        $event = Event::factory()->create();
+
+        $component = openEventEditPage($event)->call('togglePublish');
+
+        expect($event->fresh()->status)->toBe(EventStatus::Draft);
+
+        $component
+            ->set(validTicketTypeInput())
+            ->call('saveTicketType')
+            ->call('togglePublish')
+            ->assertDispatched('toast-show', fn (string $name, array $params) => str_contains(json_encode($params, JSON_UNESCAPED_UNICODE), 'イベントを公開しました'));
+
+        expect($event->fresh()->status)->toBe(EventStatus::Published);
+    });
+});

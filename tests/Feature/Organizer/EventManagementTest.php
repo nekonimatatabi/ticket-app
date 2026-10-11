@@ -2,6 +2,7 @@
 
 use App\Enums\EventStatus;
 use App\Models\Event;
+use App\Models\TicketType;
 use App\Models\User;
 use Livewire\Livewire;
 
@@ -221,7 +222,7 @@ describe('editing an event', function () {
 
 describe('publishing an event', function () {
     test('publishes a draft and returns a published event to draft', function () {
-        $event = Event::factory()->create();
+        $event = Event::factory()->has(TicketType::factory())->create();
 
         $component = Livewire::actingAs($event->organizer)
             ->test('pages::organizer.events.edit', ['event' => $event]);
