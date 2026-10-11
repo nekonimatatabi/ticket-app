@@ -26,6 +26,7 @@ erDiagram
         text description
         string venue
         datetime starts_at
+        datetime ends_at
         string status
     }
     ticket_types {
@@ -86,7 +87,8 @@ erDiagram
 | description | text | NULL | |
 | venue | string(255) | NOT NULL | 会場 |
 | starts_at | datetime | NOT NULL | 開催日時 |
-| status | string(20) | NOT NULL, default `draft` | `draft` / `published` |
+| ends_at | datetime | NOT NULL | 終了日時。`starts_at` より後 |
+| status | string(20) | NOT NULL, default `draft` | `draft`（下書き）/ `published`（公開中）/ `unpublished`（管理者が非公開にした。主催者は再公開できない） |
 | timestamps | | | |
 
 インデックス: `(status, starts_at)`（一覧表示用）、`organizer_id`（ダッシュボード用）。
