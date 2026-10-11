@@ -1,9 +1,12 @@
 <?php
 
 use App\Enums\EventStatus;
+use App\Enums\OrderStatus;
 use App\Models\Event;
+use App\Models\Order;
 use App\Models\TicketType;
 use App\Models\User;
+use Livewire\Features\SupportTesting\Testable;
 use Livewire\Livewire;
 
 function validEventInput(array $overrides = []): array
@@ -276,4 +279,75 @@ describe('authorization inside the methods that change data', function () {
             ->status->toBe(EventStatus::Published);
         expect(Event::whereKey($event->id)->exists())->toBeTrue();
     })->with(['save', 'togglePublish', 'deleteEvent']);
+});
+
+/**
+ * 編集画面の「イベントの削除」ボタンが無効かどうかを返す。
+ */
+function deleteEventButtonIsDisabled(Testable $page): bool
+{
+    $dom = new DOMDocument;
+    libxml_use_internal_errors(true);
+    $dom->loadHTML('<?xml encoding="UTF-8">'.$page->html());
+    libxml_clear_errors();
+
+    $button = (new DOMXPath($dom))->query("//button[@data-test='delete-event-button']")->item(0);
+
+    expect($button)->not->toBeNull();
+
+    return $button->hasAttribute('disabled');
+}
+
+describe('events that have orders', function () {
+    test('keeps an event that has orders and tells the organizer instead of failing', function (OrderStatus $status) {
+        $event = Event::factory()->create();
+        Order::factory()->for($event)->create(['status' => $status]);
+
+        Livewire::actingAs($event->organizer)
+            ->test('pages::organizer.events.edit', ['event' => $event])
+            ->call('deleteEvent')
+            ->assertNoRedirect()
+            ->assertDispatched('toast-show', fn (string $name, array $params) => str_contains(json_encode($params, JSON_UNESCAPED_UNICODE), '注文があるため、イベントは削除できません'));
+
+        expect(Event::whereKey($event->id)->exists())->toBeTrue()
+            ->and(Order::count())->toBe(1);
+    })->with([
+        'pending' => OrderStatus::Pending,
+        'paid' => OrderStatus::Paid,
+        'cancelled' => OrderStatus::Cancelled,
+    ]);
+
+    test('disables the delete button and explains why', function () {
+        $event = Event::factory()->create();
+        Order::factory()->for($event)->create();
+
+        $page = Livewire::actingAs($event->organizer)->test('pages::organizer.events.edit', ['event' => $event]);
+
+        expect(deleteEventButtonIsDisabled($page))->toBeTrue();
+
+        $page->assertSee('注文があるため削除できません。');
+    });
+
+    test('keeps the delete button enabled for an event without orders', function () {
+        $event = Event::factory()->create();
+
+        $page = Livewire::actingAs($event->organizer)->test('pages::organizer.events.edit', ['event' => $event]);
+
+        expect(deleteEventButtonIsDisabled($page))->toBeFalse();
+
+        $page->assertDontSee('注文があるため削除できません。');
+    });
+
+    test('does not block deleting an event whose only orders belong to another event', function () {
+        $event = Event::factory()->create();
+        Order::factory()->create();
+
+        Livewire::actingAs($event->organizer)
+            ->test('pages::organizer.events.edit', ['event' => $event])
+            ->call('deleteEvent')
+            ->assertRedirect(route('organizer.events.index'));
+
+        expect(Event::whereKey($event->id)->exists())->toBeFalse()
+            ->and(Order::count())->toBe(1);
+    });
 });

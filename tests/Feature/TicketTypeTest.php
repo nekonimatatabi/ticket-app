@@ -5,6 +5,7 @@ use App\Models\Event;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\TicketType;
+use App\Services\OrderService;
 use Illuminate\Support\Facades\DB;
 
 test('is on sale only within the sales period including both boundaries', function (string $now, bool $expected) {
@@ -77,7 +78,7 @@ function reserveTickets(TicketType $ticketType, int $quantity, OrderStatus $stat
 }
 
 test('pending orders hold tickets for 15 minutes', function () {
-    expect(TicketType::PENDING_MINUTES)->toBe(15);
+    expect(OrderService::PENDING_MINUTES)->toBe(15);
 });
 
 test('remaining equals the capacity when nothing was ordered', function () {

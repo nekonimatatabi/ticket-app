@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\OrderStatus;
+use App\Services\OrderService;
 use Database\Factories\TicketTypeFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Scope;
@@ -29,11 +30,6 @@ class TicketType extends Model
 {
     /** @use HasFactory<TicketTypeFactory> */
     use HasFactory;
-
-    /**
-     * 支払い待ちの注文が枚数を押さえておく時間（分）。06 章で OrderService に移してよい。
-     */
-    public const PENDING_MINUTES = 15;
 
     /**
      * Get the attributes that should be cast.
@@ -113,7 +109,7 @@ class TicketType extends Model
             $query->where('status', OrderStatus::Paid)
                 ->orWhere(fn (Builder $pending) => $pending
                     ->where('status', OrderStatus::Pending)
-                    ->where('created_at', '>=', now()->subMinutes(self::PENDING_MINUTES)));
+                    ->where('created_at', '>=', now()->subMinutes(OrderService::PENDING_MINUTES)));
         });
     }
 

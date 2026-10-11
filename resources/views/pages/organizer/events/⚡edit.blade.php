@@ -86,7 +86,20 @@ new #[Title('イベントを編集')] class extends Component {
     #[Computed]
     public function ticketTypes(): Collection
     {
-        return $this->event->ticketTypes()->orderBy('sales_starts_at')->orderBy('id')->get();
+        return $this->event->ticketTypes()
+            ->withExists('orderItems as has_orders')
+            ->orderBy('sales_starts_at')
+            ->orderBy('id')
+            ->get();
+    }
+
+    /**
+     * このイベントに注文があるか。あれば、外部キーの制約でイベントを削除できない。
+     */
+    #[Computed]
+    public function hasOrders(): bool
+    {
+        return $this->event->orders()->exists();
     }
 
     /**
@@ -126,13 +139,19 @@ new #[Title('イベントを編集')] class extends Component {
     }
 
     /**
-     * 券種を削除する。公開中のイベントの最後の券種は削除できない。
+     * 券種を削除する。注文のある券種と、公開中のイベントの最後の券種は削除できない。
      */
     public function deleteTicketType(int $ticketTypeId): void
     {
         $this->authorize('update', $this->event);
 
         $ticketType = $this->event->ticketTypes()->findOrFail($ticketTypeId);
+
+        if ($ticketType->orderItems()->exists()) {
+            Flux::toast(variant: 'danger', text: '注文のある券種は削除できません。');
+
+            return;
+        }
 
         if ($this->event->isPublished() && $this->event->ticketTypes()->count() <= 1) {
             Flux::toast(variant: 'danger', text: '公開中のイベントの最後の券種は削除できません。先に下書きに戻してください。');
@@ -160,11 +179,18 @@ new #[Title('イベントを編集')] class extends Component {
     }
 
     /**
-     * イベントを削除する。
+     * イベントを削除する。注文のあるイベントは削除できない。
      */
     public function deleteEvent(): void
     {
         $this->authorize('delete', $this->event);
+
+        if ($this->event->orders()->exists()) {
+            Flux::toast(variant: 'danger', text: '注文があるため、イベントは削除できません。公開を止めるには、下書きに戻してください。');
+            Flux::modal('delete-event')->close();
+
+            return;
+        }
 
         $this->event->delete();
 
@@ -240,6 +266,7 @@ new #[Title('イベントを編集')] class extends Component {
                                         variant="danger"
                                         wire:click="deleteTicketType({{ $ticketType->id }})"
                                         wire:confirm="この券種を削除しますか？"
+                                        :disabled="$ticketType->has_orders"
                                         data-test="delete-ticket-type-button"
                                     >
                                         削除
@@ -250,6 +277,10 @@ new #[Title('イベントを編集')] class extends Component {
                     @endforeach
                 </flux:table.rows>
             </flux:table>
+
+            @if ($this->ticketTypes->contains('has_orders', true))
+                <flux:text data-test="ticket-type-delete-blocked-message">注文のある券種は削除できません。</flux:text>
+            @endif
         @endif
 
         <form wire:submit="saveTicketType" class="space-y-6 rounded-lg border border-zinc-200 p-4 dark:border-zinc-700">
@@ -303,11 +334,19 @@ new #[Title('イベントを編集')] class extends Component {
 
         <div>
             <flux:heading level="2">イベントの削除</flux:heading>
-            <flux:text class="mt-2">削除すると元に戻せません。</flux:text>
 
-            <flux:modal.trigger name="delete-event">
-                <flux:button variant="danger" class="mt-4" data-test="delete-event-button">削除する</flux:button>
-            </flux:modal.trigger>
+            @if ($this->hasOrders)
+                <flux:text class="mt-2" data-test="delete-event-blocked-message">
+                    注文があるため削除できません。公開を止めるには、下書きに戻してください。
+                </flux:text>
+                <flux:button variant="danger" class="mt-4" disabled data-test="delete-event-button">削除する</flux:button>
+            @else
+                <flux:text class="mt-2">削除すると元に戻せません。</flux:text>
+
+                <flux:modal.trigger name="delete-event">
+                    <flux:button variant="danger" class="mt-4" data-test="delete-event-button">削除する</flux:button>
+                </flux:modal.trigger>
+            @endif
         </div>
     </div>
 

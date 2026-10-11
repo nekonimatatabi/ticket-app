@@ -1,7 +1,10 @@
 <?php
 
 use App\Enums\EventStatus;
+use App\Enums\OrderStatus;
 use App\Models\Event;
+use App\Models\Order;
+use App\Models\OrderItem;
 use App\Models\TicketType;
 use App\Models\User;
 use Livewire\Features\SupportTesting\Testable;
@@ -425,5 +428,81 @@ describe('publishing after adding a ticket type', function () {
             ->assertDispatched('toast-show', fn (string $name, array $params) => str_contains(json_encode($params, JSON_UNESCAPED_UNICODE), 'イベントを公開しました'));
 
         expect($event->fresh()->status)->toBe(EventStatus::Published);
+    });
+});
+
+/**
+ * 券種の表の「削除」ボタンが無効かどうかを、表の順（販売開始順、同じなら ID 順）に返す。
+ *
+ * @return array<int, bool>
+ */
+function deleteTicketTypeButtonsDisabled(Testable $page): array
+{
+    $dom = new DOMDocument;
+    libxml_use_internal_errors(true);
+    $dom->loadHTML('<?xml encoding="UTF-8">'.$page->html());
+    libxml_clear_errors();
+
+    $disabled = [];
+
+    foreach ((new DOMXPath($dom))->query("//button[@data-test='delete-ticket-type-button']") as $button) {
+        $disabled[] = $button->hasAttribute('disabled');
+    }
+
+    return $disabled;
+}
+
+describe('ticket types that have orders', function () {
+    test('keeps a ticket type that has orders and tells the organizer instead of failing', function (OrderStatus $status) {
+        $event = Event::factory()->create();
+        $ordered = TicketType::factory()->for($event)->create();
+        $item = OrderItem::factory()->for($ordered)->for(Order::factory()->for($event)->create(['status' => $status]), 'order')->create();
+
+        openEventEditPage($event)
+            ->call('deleteTicketType', $ordered->id)
+            ->assertDispatched('toast-show', fn (string $event, array $params) => str_contains(json_encode($params, JSON_UNESCAPED_UNICODE), '注文のある券種は削除できません'));
+
+        expect(TicketType::whereKey($ordered->id)->exists())->toBeTrue()
+            ->and(OrderItem::whereKey($item->id)->exists())->toBeTrue();
+    })->with([
+        'pending' => OrderStatus::Pending,
+        'paid' => OrderStatus::Paid,
+        'cancelled' => OrderStatus::Cancelled,
+        'refunded' => OrderStatus::Refunded,
+    ]);
+
+    test('still deletes a ticket type without orders in the same event', function () {
+        $event = Event::factory()->create();
+        TicketType::factory()->for($event)->create();
+        $free = TicketType::factory()->for($event)->create();
+
+        openEventEditPage($event)->call('deleteTicketType', $free->id);
+
+        expect(TicketType::whereKey($free->id)->exists())->toBeFalse()
+            ->and(TicketType::count())->toBe(1);
+    });
+
+    test('disables only the delete button of ticket types that have orders and explains why', function () {
+        $event = Event::factory()->create();
+        $ordered = TicketType::factory()->for($event)->create();
+        TicketType::factory()->for($event)->create();
+        OrderItem::factory()->for($ordered)->for(Order::factory()->for($event), 'order')->create();
+
+        $page = openEventEditPage($event);
+
+        expect(deleteTicketTypeButtonsDisabled($page))->toBe([true, false]);
+
+        $page->assertSee('注文のある券種は削除できません。');
+    });
+
+    test('does not show the explanation when no ticket type has orders', function () {
+        $event = Event::factory()->create();
+        TicketType::factory()->for($event)->create();
+
+        $page = openEventEditPage($event);
+
+        expect(deleteTicketTypeButtonsDisabled($page))->toBe([false]);
+
+        $page->assertDontSee('注文のある券種は削除できません。');
     });
 });

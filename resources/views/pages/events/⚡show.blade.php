@@ -2,6 +2,7 @@
 
 use App\Models\Event;
 use App\Models\TicketType;
+use App\Services\OrderService;
 use Illuminate\Database\Eloquent\Collection;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
@@ -11,6 +12,13 @@ new #[Title('イベント詳細')] class extends Component {
     public Event $event;
 
     /**
+     * 券種ごとに選んだ枚数。[券種ID => 枚数]
+     *
+     * @var array<int|string, int|string>
+     */
+    public array $quantities = [];
+
+    /**
      * 公開中のイベントは誰でも見られる。それ以外は所有者と管理者だけで、ほかの人には 404 を返す。
      */
     public function mount(Event $event): void
@@ -18,6 +26,42 @@ new #[Title('イベント詳細')] class extends Component {
         $this->authorize('view', $event);
 
         $this->event = $event->load('organizer');
+
+        $this->quantities = $this->ticketTypes->mapWithKeys(fn (TicketType $ticketType) => [$ticketType->id => 0])->all();
+    }
+
+    /**
+     * 選んだ枚数をセッションに保存して、購入手続きへ進む。
+     * ここでは整数に直して、枚数 0 とこのイベントの券種でないものを捨てるだけ。
+     * 枚数の上限・販売期間・残り枚数の確認は、支払いへ進むときの OrderService が必ず行う。
+     */
+    public function continueToPurchase(): void
+    {
+        $this->authorize('view', $this->event);
+
+        $ticketTypeIds = $this->event->ticketTypes()->pluck('id')->all();
+        $selected = [];
+
+        foreach ($this->quantities as $ticketTypeId => $quantity) {
+            $ticketTypeId = filter_var($ticketTypeId, FILTER_VALIDATE_INT);
+            $quantity = is_int($quantity) || is_string($quantity) ? filter_var($quantity, FILTER_VALIDATE_INT) : false;
+
+            if ($ticketTypeId === false || $quantity === false || $quantity < 1 || ! in_array($ticketTypeId, $ticketTypeIds, true)) {
+                continue;
+            }
+
+            $selected[$ticketTypeId] = $quantity;
+        }
+
+        if ($selected === []) {
+            $this->addError('quantities', 'チケットを1枚以上選んでください。');
+
+            return;
+        }
+
+        session()->put("purchase.{$this->event->id}", $selected);
+
+        $this->redirectRoute('events.purchase', $this->event, navigate: true);
     }
 
     /**
@@ -83,6 +127,7 @@ new #[Title('イベント詳細')] class extends Component {
                 <flux:table.column>価格</flux:table.column>
                 <flux:table.column>残り枚数</flux:table.column>
                 <flux:table.column>販売期間</flux:table.column>
+                <flux:table.column>枚数</flux:table.column>
             </flux:table.columns>
 
             <flux:table.rows>
@@ -106,9 +151,42 @@ new #[Title('イベント詳細')] class extends Component {
                             {{ $ticketType->sales_starts_at->isoFormat('M月D日(ddd) HH:mm') }}
                             〜 {{ $ticketType->sales_ends_at->isoFormat('M月D日(ddd) HH:mm') }}
                         </flux:table.cell>
+                        <flux:table.cell>
+                            @php
+                                $maxQuantity = $ticketType->isOnSale()
+                                    ? min(OrderService::MAX_QUANTITY, $ticketType->remaining())
+                                    : 0;
+                            @endphp
+                            <flux:select
+                                wire:model="quantities.{{ $ticketType->id }}"
+                                :disabled="$maxQuantity === 0"
+                                size="sm"
+                                class="w-24"
+                                aria-label="{{ $ticketType->name }}の枚数"
+                                data-test="quantity-select-{{ $ticketType->id }}"
+                            >
+                                @for ($quantity = 0; $quantity <= $maxQuantity; $quantity++)
+                                    <flux:select.option value="{{ $quantity }}">{{ $quantity }}枚</flux:select.option>
+                                @endfor
+                            </flux:select>
+                        </flux:table.cell>
                     </flux:table.row>
                 @endforeach
             </flux:table.rows>
         </flux:table>
+
+        <div class="mt-6 space-y-2">
+            <flux:error name="quantities" />
+
+            <flux:button
+                variant="primary"
+                wire:click="continueToPurchase"
+                wire:loading.attr="disabled"
+                :disabled="! $this->ticketTypes->contains(fn ($ticketType) => $ticketType->isOnSale() && $ticketType->remaining() > 0)"
+                data-test="continue-to-purchase-button"
+            >
+                購入手続きへ進む
+            </flux:button>
+        </div>
     @endif
 </section>
