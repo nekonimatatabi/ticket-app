@@ -19,6 +19,16 @@ test('upcoming scope excludes events that have already started', function () {
     expect(Event::upcoming()->pluck('id')->all())->toBe([$upcoming->id]);
 });
 
+test('upcoming scope keeps events in progress and drops events at the moment they end', function () {
+    $this->travelTo('2030-05-01 12:00:00');
+
+    $notStarted = Event::factory()->create(['starts_at' => '2030-05-02 10:00:00', 'ends_at' => '2030-05-02 12:00:00']);
+    $inProgress = Event::factory()->create(['starts_at' => '2030-05-01 11:00:00', 'ends_at' => '2030-05-01 13:00:00']);
+    Event::factory()->create(['starts_at' => '2030-05-01 10:00:00', 'ends_at' => '2030-05-01 12:00:00']);
+
+    expect(Event::upcoming()->orderBy('id')->pluck('id')->all())->toBe([$notStarted->id, $inProgress->id]);
+});
+
 test('isPublished is true only for published events', function () {
     expect(Event::factory()->published()->make()->isPublished())->toBeTrue()
         ->and(Event::factory()->make()->isPublished())->toBeFalse()

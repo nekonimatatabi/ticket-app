@@ -4,19 +4,24 @@ namespace App\Policies;
 
 use App\Models\Event;
 use App\Models\User;
+use Illuminate\Auth\Access\Response;
 
 class EventPolicy
 {
     /**
-     * 公開中なら誰でも。それ以外は所有者と管理者だけ。
+     * 公開中なら誰でも。それ以外は所有者と管理者だけで、見られない人には 404（存在しない扱い）を返す。
      */
-    public function view(?User $user, Event $event): bool
+    public function view(?User $user, Event $event): Response|bool
     {
         if ($event->isPublished()) {
             return true;
         }
 
-        return $user !== null && ($user->isAdmin() || $this->isOwner($user, $event));
+        if ($user !== null && ($user->isAdmin() || $this->isOwner($user, $event))) {
+            return true;
+        }
+
+        return Response::denyAsNotFound();
     }
 
     public function create(User $user): bool

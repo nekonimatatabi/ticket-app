@@ -62,6 +62,14 @@ class Event extends Model
     }
 
     /**
+     * @return HasMany<Order, $this>
+     */
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Order::class);
+    }
+
+    /**
      * @param  Builder<Event>  $query
      */
     #[Scope]
@@ -76,7 +84,7 @@ class Event extends Model
     #[Scope]
     protected function upcoming(Builder $query): void
     {
-        $query->where('starts_at', '>=', now());
+        $query->where('ends_at', '>', now());
     }
 
     /**

@@ -30,6 +30,20 @@ test('only the owner and admins can view an event that is not published', functi
     'unpublished' => EventStatus::Unpublished,
 ]);
 
+test('hides an event that is not published from other users as not found', function (?Closure $makeViewer) {
+    $event = Event::factory()->create();
+
+    $viewer = $makeViewer?->call($this);
+    $response = Gate::forUser($viewer)->inspect('view', $event);
+
+    expect($response->allowed())->toBeFalse()
+        ->and($response->status())->toBe(404);
+})->with([
+    'guest' => null,
+    'customer' => fn () => User::factory()->create(),
+    'other organizer' => fn () => User::factory()->organizer()->create(),
+]);
+
 test('only organizers can create events', function () {
     expect(Gate::forUser(User::factory()->organizer()->create())->allows('create', Event::class))->toBeTrue()
         ->and(Gate::forUser(User::factory()->create())->allows('create', Event::class))->toBeFalse()

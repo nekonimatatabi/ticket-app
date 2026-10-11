@@ -115,7 +115,7 @@ erDiagram
 | id | bigint unsigned | PK | |
 | user_id | bigint unsigned | FK → users.id, NOT NULL | 注文者 |
 | event_id | bigint unsigned | FK → events.id, NOT NULL | 1注文は1イベントのみ。主催者の注文一覧（C16）を引きやすくする |
-| status | string(20) | NOT NULL, default `pending` | `pending`（支払い待ち）/ `paid`（支払い済み） |
+| status | string(20) | NOT NULL, default `pending` | `pending`（支払い待ち）/ `paid`（支払い済み）/ `cancelled`（キャンセル）/ `refunded`（返金済み）。残り枚数の計算に含めるのは `pending` と `paid` だけ |
 | total_amount | unsigned integer | NOT NULL | 合計金額（円）。注文作成時に明細から計算して保存。Webhook で Stripe の金額と照合する |
 | stripe_checkout_session_id | string(255) | UNIQUE, NULL | Checkout Session 作成前は NULL。UNIQUE で Webhook の二重処理を防ぐ |
 | paid_at | datetime | NULL | 支払い確定日時 |
@@ -168,10 +168,14 @@ erDiagram
 ```
 残り枚数 = ticket_types.capacity
          − SUM(order_items.quantity)
-           ※ 対象は、その券種の明細のうち、親の orders.status が pending または paid のもの
+           ※ 対象は、その券種の明細のうち、親の orders が次のどちらかのもの
+             ・status が paid
+             ・status が pending で、created_at が PENDING_MINUTES（15）分以内
 ```
 
-- **`pending` も差し引く。** 支払い待ちの人が決済している間に、同じ枚数が別の人へ売れてしまうのを防ぐため。
+- **`pending` は15分だけ差し引く。** 支払い待ちの人が決済している間に、同じ枚数が別の人へ売れてしまうのを防ぐため。15分を過ぎた `pending` は、放置されたものとして数えない（境界の「ちょうど15分前」は数える）。時間は `TicketType::PENDING_MINUTES` で持つ。
+- **`cancelled` / `refunded` は数えない。**
+- **残り枚数は 0 未満にしない。** 同時購入の競合で売りすぎた場合も、画面には負の数を出さない。
 - **`paid` になっても二重に引かない。** 同じ明細が `pending` から `paid` に変わるだけで、明細の行は増えないため。
 - **`tickets` の行数は数えない。** 発行は支払い確定後なので、`pending` の分が漏れる。
 
@@ -185,18 +189,15 @@ erDiagram
 
 ### 実装の目安
 
-`TicketType` モデルにアクセサ（`remaining`）を持たせる。一覧や詳細で複数の券種を表示するときは、N+1 を避けるために `withSum` で集計を一括取得する。
+`TicketType::remaining()` が残り枚数を返す。一覧や詳細で複数の券種を表示するときは、N+1 を避けるために、スコープ `withReservedQuantity()`（`withSum` で `reserved_quantity` を一括取得）を使う。読み込み済みなら `remaining()` は追加の問い合わせをしない。
 
 ```php
-TicketType::query()
-    ->withSum(['orderItems as sold_quantity' => fn ($query) => $query
-        ->whereHas('order', fn ($q) => $q->whereIn('status', ['pending', 'paid'])),
-    ], 'quantity');
+$event->ticketTypes()->withReservedQuantity()->get();
 ```
 
-残り枚数は `capacity - sold_quantity` で求める。
+残り枚数は `capacity - reserved_quantity`（0 未満は 0）で求める。
 
 ### 既知の制約
 
-- **`pending` の期限切れは扱わない。** 放置された `pending` が枚数を握り続ける。必要になったら `expired` 状態と `expires_at` を足し、期限切れを集計から外す。
+- **期限切れの `pending` は、状態を変えずに集計から外すだけ。** 15分を過ぎた `pending` は `pending` のまま残る。`cancelled` などへ変える後始末が必要になったら、スケジュールで処理する。
 - **同時購入の競合は扱わない。** 2人が同時に最後の1枚を買うと、チェックをすり抜ける可能性がある。トランザクションと行ロックによる対策は拡張 E2 で扱う。
