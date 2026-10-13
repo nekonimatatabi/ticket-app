@@ -40,6 +40,7 @@ Route::middleware(['auth', 'verified', 'role:organizer,admin'])
     ->name('organizer.')
     ->group(function () {
         Route::livewire('events/{event}/orders', 'pages::organizer.events.orders')->name('events.orders');
+        Route::livewire('events/{event}/check-in', 'pages::organizer.events.check-in')->name('events.check-in');
     });
 
 require __DIR__.'/settings.php';

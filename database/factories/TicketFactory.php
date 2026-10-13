@@ -4,6 +4,7 @@ namespace Database\Factories;
 
 use App\Models\OrderItem;
 use App\Models\Ticket;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 
@@ -23,5 +24,16 @@ class TicketFactory extends Factory
             'order_item_id' => OrderItem::factory(),
             'code' => (string) Str::ulid(),
         ];
+    }
+
+    /**
+     * 受付済みのチケット。
+     */
+    public function checkedIn(?User $by = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'checked_in_at' => now(),
+            'checked_in_by' => $by->id ?? User::factory(),
+        ]);
     }
 }

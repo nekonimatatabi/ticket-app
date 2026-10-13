@@ -87,15 +87,42 @@ new #[Title('注文の詳細')] class extends Component {
     </div>
 
     @if ($order->status === OrderStatus::Paid)
-        <flux:heading size="lg" level="2" class="mt-10">チケット</flux:heading>
-        <flux:text class="mt-1">当日は、この画面のコードをお見せください。</flux:text>
+        @php
+            $isBuyer = auth()->id() === $order->user_id;
+            $qrCode = app(\App\Services\TicketQrCode::class);
+        @endphp
 
-        <ul class="mt-4 space-y-2" data-test="ticket-list">
+        <flux:heading size="lg" level="2" class="mt-10">チケット</flux:heading>
+
+        @if ($isBuyer)
+            <flux:text class="mt-1">当日は、受付でこの QR コードをお見せください。</flux:text>
+        @endif
+
+        <ul class="mt-4 space-y-3" data-test="ticket-list">
             @foreach ($order->items as $item)
                 @foreach ($item->tickets as $ticket)
-                    <li class="flex items-center justify-between rounded-lg border border-zinc-200 px-4 py-3 dark:border-zinc-700" data-test="ticket">
-                        <span>{{ $item->ticketType->name }}</span>
-                        <span class="font-mono text-sm tracking-wider" data-test="ticket-code">{{ $ticket->code }}</span>
+                    <li class="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 px-4 py-3 dark:border-zinc-700" data-test="ticket" data-checked-in="{{ $ticket->isCheckedIn() ? 'true' : 'false' }}">
+                        <div>
+                            <div>{{ $item->ticketType->name }}</div>
+
+                            @if ($ticket->isCheckedIn())
+                                <flux:badge size="sm" color="zinc" class="mt-1" data-test="ticket-checked-in">
+                                    受付済み（{{ $ticket->checked_in_at->isoFormat('M月D日(ddd) HH:mm') }}）
+                                </flux:badge>
+                            @else
+                                <flux:badge size="sm" color="green" class="mt-1">未受付</flux:badge>
+                            @endif
+
+                            @if ($isBuyer)
+                                <div class="mt-2 font-mono text-sm tracking-wider" data-test="ticket-code">{{ $ticket->code }}</div>
+                            @endif
+                        </div>
+
+                        @if ($isBuyer)
+                            <div class="shrink-0 rounded bg-white p-1 {{ $ticket->isCheckedIn() ? 'opacity-30' : '' }}" data-test="ticket-qr" role="img" aria-label="チケットの QR コード">
+                                {!! $qrCode->svg($ticket->code, 144) !!}
+                            </div>
+                        @endif
                     </li>
                 @endforeach
             @endforeach

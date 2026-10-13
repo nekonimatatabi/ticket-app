@@ -43,6 +43,14 @@ class EventPolicy
     }
 
     /**
+     * 受付（チケットの QR を読み取って、入場を確認する）ができるのは、所有者と管理者だけ。
+     */
+    public function checkIn(User $user, Event $event): bool
+    {
+        return $user->isAdmin() || $this->isOwner($user, $event);
+    }
+
+    /**
      * イベントの売上と注文の一覧は、所有者と管理者だけが見られる。
      */
     public function viewOrders(User $user, Event $event): bool

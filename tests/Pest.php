@@ -1,7 +1,11 @@
 <?php
 
+use App\Enums\OrderStatus;
+use App\Models\Event;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\Ticket;
+use App\Models\TicketType;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
@@ -133,4 +137,17 @@ function postWebhook(string $payload, ?string $signature): TestResponse
     }
 
     return test()->call('POST', route('stripe.webhook'), [], [], [], test()->transformHeadersToServerVars($headers), $payload);
+}
+
+/**
+ * 指定した状態の注文のチケットを1枚つくる。
+ */
+function issuedTicket(Event $event, OrderStatus $status = OrderStatus::Paid, string|TicketType $ticketType = '一般', ?User $buyer = null): Ticket
+{
+    $order = Order::factory()->for($event)->for($buyer ?? User::factory()->create())->create();
+    $order->forceFill(['status' => $status, 'paid_at' => $status === OrderStatus::Paid ? now() : null])->save();
+    $ticketType = $ticketType instanceof TicketType ? $ticketType : TicketType::factory()->for($event)->create(['name' => $ticketType]);
+    $item = OrderItem::factory()->for($order)->for($ticketType)->create(['quantity' => 1]);
+
+    return Ticket::factory()->for($item)->create();
 }

@@ -59,6 +59,8 @@ erDiagram
         bigint id PK
         bigint order_item_id FK
         string code UK
+        datetime checked_in_at
+        bigint checked_in_by FK
     }
 ```
 
@@ -144,8 +146,12 @@ erDiagram
 |-|-|-|-|
 | id | bigint unsigned | PK | |
 | order_item_id | bigint unsigned | FK → order_items.id, NOT NULL, INDEX | どの明細の何枚目か |
-| code | string(26) | UNIQUE, NOT NULL | 1枚ごとの固有コード。ULID（`Str::ulid()`）で生成 |
+| code | string(26) | UNIQUE, NOT NULL | 1枚ごとの固有コード。ULID（`Str::ulid()`）で生成。購入者の注文詳細に、このコードの QR コードを表示する |
+| checked_in_at | datetime | NULL | 受付（入場の確認）をした日時。NULL は未受付 |
+| checked_in_by | bigint unsigned | FK → users.id, NULL | 受付をした人（主催者・管理者）。ユーザーが削除されたら NULL |
 | timestamps | | | |
+
+受付は `CheckInService::checkIn()` が、「`checked_in_at` が NULL の行だけ更新する」条件付き UPDATE で行う。2台の端末で同時に読んでも、成功するのは1台だけで、1枚で二重に入場できない。受付の取り消し（誤操作の訂正）は NULL に戻す。
 
 支払い確定時に、明細の `quantity` 枚ぶん行を作る（`OrderService::markAsPaid()`）。`status` が `pending` の行だけを更新する条件付き UPDATE が成功した1回だけ作るので、Webhook と完了ページが同時に来てもチケットは二重にならない。
 

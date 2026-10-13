@@ -55,6 +55,9 @@ new #[Title('イベント一覧')] class extends Component {
                         <flux:table.cell align="end" data-test="sales-amount">{{ number_format($event->salesAmount()) }}円</flux:table.cell>
                         <flux:table.cell align="end">
                             <div class="flex justify-end gap-2">
+                                <flux:button size="sm" :href="route('organizer.events.check-in', $event)" wire:navigate data-test="event-check-in-button">
+                                    受付
+                                </flux:button>
                                 <flux:button size="sm" :href="route('organizer.events.orders', $event)" wire:navigate data-test="event-orders-button">
                                     売上
                                 </flux:button>
