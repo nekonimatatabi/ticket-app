@@ -45,6 +45,7 @@ erDiagram
         string status
         uint total_amount
         string stripe_checkout_session_id UK
+        string stripe_payment_intent_id
         datetime paid_at
     }
     order_items {
@@ -118,6 +119,7 @@ erDiagram
 | status | string(20) | NOT NULL, default `pending` | `pending`（支払い待ち）/ `paid`（支払い済み）/ `cancelled`（キャンセル）/ `refunded`（返金済み）。残り枚数の計算に含めるのは `pending` と `paid` だけ |
 | total_amount | unsigned integer | NOT NULL | 合計金額（円）。注文作成時に明細から計算して保存。Webhook で Stripe の金額と照合する |
 | stripe_checkout_session_id | string(255) | UNIQUE, NULL | Checkout Session 作成前は NULL。UNIQUE で Webhook の二重処理を防ぐ |
+| stripe_payment_intent_id | string(255) | NULL | 支払い確定時に保存する PaymentIntent の ID。返金（拡張 E3）で使う。0円の注文は NULL |
 | paid_at | datetime | NULL | 支払い確定日時 |
 | timestamps | | | |
 
@@ -145,7 +147,7 @@ erDiagram
 | code | string(26) | UNIQUE, NOT NULL | 1枚ごとの固有コード。ULID（`Str::ulid()`）で生成 |
 | timestamps | | | |
 
-支払い確定時に、明細の `quantity` 枚ぶん行を作る。
+支払い確定時に、明細の `quantity` 枚ぶん行を作る（`OrderService::markAsPaid()`）。`status` が `pending` の行だけを更新する条件付き UPDATE が成功した1回だけ作るので、Webhook と完了ページが同時に来てもチケットは二重にならない。
 
 ## 外部キーの削除時の動き
 

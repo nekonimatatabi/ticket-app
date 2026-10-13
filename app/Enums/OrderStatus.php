@@ -18,4 +18,17 @@ enum OrderStatus: string
             self::Refunded => '返金済み',
         };
     }
+
+    /**
+     * Flux のバッジに渡す色。
+     */
+    public function color(): string
+    {
+        return match ($this) {
+            self::Pending => 'amber',
+            self::Paid => 'green',
+            self::Cancelled => 'zinc',
+            self::Refunded => 'red',
+        };
+    }
 }

@@ -3,6 +3,7 @@
 use App\Enums\OrderStatus;
 use App\Models\Event;
 use App\Models\Order;
+use App\Models\Ticket;
 use App\Models\TicketType;
 use App\Models\User;
 use App\Services\CheckoutService;
@@ -38,7 +39,7 @@ test('creates a checkout session for the pending order and redirects to the Stri
     expect(Order::sole()->status)->toBe(OrderStatus::Pending);
 });
 
-test('skips Stripe for a free order and goes to the completion page', function () {
+test('skips Stripe for a free order, marks it as paid, and goes to the completion page', function () {
     $event = Event::factory()->published()->create();
     $ticketType = TicketType::factory()->for($event)->create(['price' => 0]);
 
@@ -48,8 +49,11 @@ test('skips Stripe for a free order and goes to the completion page', function (
         ->assertRedirect(route('orders.complete', Order::sole()));
 
     expect(Order::sole())
-        ->status->toBe(OrderStatus::Pending)
-        ->total_amount->toBe(0);
+        ->status->toBe(OrderStatus::Paid)
+        ->total_amount->toBe(0)
+        ->stripe_payment_intent_id->toBeNull()
+        ->paid_at->not->toBeNull()
+        ->and(Ticket::count())->toBe(2);
 });
 
 test('cancels the order and shows a message when the Stripe checkout page cannot be opened', function () {

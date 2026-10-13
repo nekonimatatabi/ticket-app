@@ -6,9 +6,12 @@ use App\Exceptions\PurchaseException;
 use App\Models\Event;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\Ticket;
 use App\Models\TicketType;
 use App\Models\User;
 use App\Services\OrderService;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 function placeOrder(User $user, Event $event, array $quantities): Order
 {
@@ -300,6 +303,93 @@ describe('all or nothing', function () {
             ->toThrow(PurchaseException::class);
 
         expectNothingWasOrdered();
+    });
+});
+
+describe('marking an order as paid', function () {
+    test('marks a pending order as paid, saves the payment intent, and issues the tickets', function () {
+        $order = pendingOrder([2, 1]);
+
+        expect(app(OrderService::class)->markAsPaid($order, 'pi_test_123'))->toBeTrue();
+
+        expect($order->status)->toBe(OrderStatus::Paid)
+            ->and($order->fresh())
+            ->status->toBe(OrderStatus::Paid)
+            ->stripe_payment_intent_id->toBe('pi_test_123')
+            ->paid_at->not->toBeNull()
+            ->and($order->tickets()->count())->toBe(3)
+            ->and(Ticket::query()->pluck('code')->unique())->toHaveCount(3);
+    });
+
+    test('accepts no payment intent for a free order', function () {
+        $order = pendingOrder([1]);
+
+        expect(app(OrderService::class)->markAsPaid($order, null))->toBeTrue()
+            ->and($order->fresh()->stripe_payment_intent_id)->toBeNull();
+    });
+
+    test('returns false and issues nothing more when the order was already marked as paid', function () {
+        $order = pendingOrder([2]);
+        $service = app(OrderService::class);
+
+        expect($service->markAsPaid($order, 'pi_first'))->toBeTrue()
+            ->and($service->markAsPaid($order, 'pi_second'))->toBeFalse();
+
+        expect(Ticket::count())->toBe(2)
+            ->and($order->fresh()->stripe_payment_intent_id)->toBe('pi_first');
+    });
+
+    test('returns false when another process marked the same order as paid first', function () {
+        $staleCopy = pendingOrder([2]);
+        $sameOrder = Order::findOrFail($staleCopy->id);
+
+        app(OrderService::class)->markAsPaid($sameOrder, 'pi_first');
+
+        expect(app(OrderService::class)->markAsPaid($staleCopy, 'pi_second'))->toBeFalse()
+            ->and(Ticket::count())->toBe(2);
+    });
+
+    test('does not touch an order that is not pending', function (OrderStatus $status) {
+        Log::spy();
+
+        $order = pendingOrder([2]);
+        $order->forceFill(['status' => $status])->save();
+
+        expect(app(OrderService::class)->markAsPaid($order, 'pi_test_123'))->toBeFalse();
+
+        expect($order->fresh())
+            ->status->toBe($status)
+            ->paid_at->toBeNull()
+            ->and(Ticket::count())->toBe(0);
+    })->with([OrderStatus::Cancelled, OrderStatus::Refunded]);
+
+    test('logs a warning when a payment comes in for a cancelled order', function () {
+        Log::spy();
+
+        $order = pendingOrder([1]);
+        $order->forceFill(['status' => OrderStatus::Cancelled])->save();
+
+        app(OrderService::class)->markAsPaid($order, 'pi_test_123');
+
+        Log::shouldHaveReceived('warning')->once();
+    });
+
+    test('rolls the order back to pending when the tickets cannot be issued', function () {
+        $order = pendingOrder([2]);
+        Ticket::factory()->for(OrderItem::query()->firstOrFail())->create();
+
+        DB::listen(function ($query) {
+            if (str_starts_with($query->sql, 'insert into "tickets"')) {
+                throw new RuntimeException('ticket insert failed');
+            }
+        });
+
+        expect(fn () => app(OrderService::class)->markAsPaid($order, 'pi_test_123'))
+            ->toThrow(RuntimeException::class);
+
+        expect($order->fresh())
+            ->status->toBe(OrderStatus::Pending)
+            ->paid_at->toBeNull();
     });
 });
 

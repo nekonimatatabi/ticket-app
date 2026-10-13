@@ -4,9 +4,14 @@ namespace App\Services;
 
 use App\Models\Order;
 use App\Models\OrderItem;
+use RuntimeException;
 use Stripe\Checkout\Session;
+use Stripe\Event;
 use Stripe\Exception\ApiErrorException;
+use Stripe\Exception\SignatureVerificationException;
 use Stripe\StripeClient;
+use Stripe\Webhook;
+use UnexpectedValueException;
 
 /**
  * Stripe Checkout とのやり取りをまとめる。テストではこのクラスをモックする。
@@ -74,5 +79,25 @@ class CheckoutService
     public function retrieveSession(string $id): Session
     {
         return $this->stripe->checkout->sessions->retrieve($id);
+    }
+
+    /**
+     * Webhook のリクエストを、Stripe-Signature ヘッダーと署名シークレットで検証して、イベントを取り出す。
+     *
+     * 署名シークレットが未設定のまま検証すると、誰でも署名を偽造できてしまうので、検証せずに例外にする。
+     *
+     * @throws SignatureVerificationException 署名が合わない、またはヘッダーが無い
+     * @throws UnexpectedValueException 本文が正しい JSON ではない
+     * @throws RuntimeException 署名シークレットが未設定
+     */
+    public function constructWebhookEvent(string $payload, ?string $signature): Event
+    {
+        $secret = config('services.stripe.webhook_secret');
+
+        if (! is_string($secret) || $secret === '') {
+            throw new RuntimeException('STRIPE_WEBHOOK_SECRET が設定されていません。');
+        }
+
+        return Webhook::constructEvent($payload, $signature ?? '', $secret);
     }
 }

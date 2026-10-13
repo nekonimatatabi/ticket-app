@@ -6,7 +6,7 @@
     ];
 
     if ($user) {
-        $navItems[] = ['label' => 'マイチケット', 'href' => url('/orders'), 'current' => request()->is('orders', 'orders/*')];
+        $navItems[] = ['label' => 'マイチケット', 'href' => route('orders.index'), 'current' => request()->is('orders', 'orders/*')];
 
         if ($user->isOrganizer()) {
             $navItems[] = ['label' => '主催者メニュー', 'href' => url('/organizer/events'), 'current' => request()->is('organizer/*')];

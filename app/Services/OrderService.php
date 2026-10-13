@@ -4,12 +4,18 @@ namespace App\Services;
 
 use App\Enums\OrderStatus;
 use App\Exceptions\PurchaseException;
+use App\Mail\OrderPaidMail;
 use App\Models\Event;
 use App\Models\Order;
 use App\Models\TicketType;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+use Stripe\Checkout\Session;
+use Throwable;
 
 class OrderService
 {
@@ -77,6 +83,112 @@ class OrderService
 
             return $order->load('items');
         });
+    }
+
+    /**
+     * Stripe の Checkout Session が、この注文の支払い済みの Session であることを確かめて、注文を確定する。
+     *
+     * 署名が正しくても、それは「Stripe から届いた」ことしか保証しない。同じ Stripe アカウントを使う別の環境の
+     * Session が混ざっても確定しないよう、Session の ID・metadata の注文 ID・金額・通貨を注文と突き合わせる。
+     * 合わないときは何もせず、ログに残す。
+     *
+     * @return bool 今回の呼び出しで paid にできたら true。支払い前・不一致・処理済みなら false
+     */
+    public function confirmStripePayment(Order $order, Session $session): bool
+    {
+        if ($session->payment_status !== 'paid') {
+            return false;
+        }
+
+        $matches = $order->stripe_checkout_session_id !== null
+            && $session->id === $order->stripe_checkout_session_id
+            && (string) ($session->metadata->order_id ?? '') === (string) $order->id
+            && $session->amount_total === $order->total_amount
+            && $session->currency === 'jpy';
+
+        if (! $matches) {
+            Log::warning('Stripe の Session が注文と一致しないため、確定しませんでした。', [
+                'order_id' => $order->id,
+                'session_id' => $session->id,
+                'amount_total' => $session->amount_total,
+                'currency' => $session->currency,
+            ]);
+
+            return false;
+        }
+
+        $paymentIntentId = is_string($session->payment_intent) ? $session->payment_intent : null;
+
+        return $this->markAsPaid($order, $paymentIntentId);
+    }
+
+    /**
+     * 支払い待ち（pending）の注文を支払い済み（paid）にして、明細の枚数分のチケットを発行する。
+     *
+     * Webhook と完了ページのどちらからも呼ばれ、同時に来ることもある。そのため「status が pending の行だけ更新する」
+     * 条件付き UPDATE で排他にし、更新できた1回だけがチケットを作る。更新とチケットの発行は1つのトランザクションにする。
+     * 確定できた1回だけ、購入完了メールを送る（処理済みでは送らない）。
+     * 取り消し済み（cancelled）の注文には何もしない。支払いが入っていた場合は、返金の判断ができるようログに残す。
+     *
+     * @return bool 今回の呼び出しで paid にできたら true。既に処理済み（paid など）なら false
+     */
+    public function markAsPaid(Order $order, ?string $paymentIntentId): bool
+    {
+        $paid = DB::transaction(function () use ($order, $paymentIntentId): bool {
+            $updated = Order::query()
+                ->whereKey($order->id)
+                ->where('status', OrderStatus::Pending)
+                ->update([
+                    'status' => OrderStatus::Paid,
+                    'paid_at' => now(),
+                    'stripe_payment_intent_id' => $paymentIntentId,
+                ]);
+
+            if ($updated === 0) {
+                return false;
+            }
+
+            foreach ($order->items()->get() as $item) {
+                for ($number = 0; $number < $item->quantity; $number++) {
+                    $item->tickets()->create(['code' => (string) Str::ulid()]);
+                }
+            }
+
+            return true;
+        });
+
+        $order->refresh();
+
+        if ($paid) {
+            $this->sendPaidMail($order);
+        }
+
+        if (! $paid && $order->status === OrderStatus::Cancelled) {
+            Log::warning('取り消し済みの注文に支払いが入りました。返金が必要です。', [
+                'order_id' => $order->id,
+                'payment_intent_id' => $paymentIntentId,
+            ]);
+        }
+
+        return $paid;
+    }
+
+    /**
+     * 購入完了メールを注文者へ送る。キューは使わず、そのまま送る。
+     *
+     * 支払いは確定済みなので、送信に失敗しても注文は戻さない。例外を投げると Webhook が再送されるが、
+     * 再送では「処理済み」になってメールが送られないため、ここで握りつぶしてログに残す。
+     */
+    private function sendPaidMail(Order $order): void
+    {
+        try {
+            Mail::to($order->user)->send(new OrderPaidMail($order));
+        } catch (Throwable $exception) {
+            Log::error('購入完了メールを送れませんでした。', [
+                'order_id' => $order->id,
+                'exception' => $exception->getMessage(),
+            ]);
+        }
     }
 
     /**

@@ -50,7 +50,7 @@ test('a guest chooses tickets, logs in, returns to the purchase page, and goes t
 
     $this->get(route('orders.complete', Order::sole()))
         ->assertOk()
-        ->assertSee('注文を受け付けました（支払いは平日課題で実装）')
+        ->assertSee('お支払いを確認しています')
         ->assertSee('6,000円');
 });
 
