@@ -36,7 +36,7 @@ sequenceDiagram
 - `metadata.order_id` に注文 ID を入れておき、Webhook で注文を特定する
 - `success_url` は `/orders/{order}/complete?session_id={CHECKOUT_SESSION_ID}`、`cancel_url` は `/orders/{order}/cancel`
 - Webhook は `POST /stripe/webhook`。CSRF の除外対象にし、`Webhook::constructEvent()` で署名を検証する
-- 扱うイベントはコアでは `checkout.session.completed` のみ。拡張 E3 で `charge.refunded` を追加
+- 扱うイベントは `checkout.session.completed` と、後払い型の決済方法（コンビニ払いなど）のための `checkout.session.async_payment_succeeded` / `async_payment_failed`。拡張 E3 で `charge.refunded` を追加。支払い方法はダッシュボードの設定で決まり、API の `payment_method_types` では絞れない（このアカウントの API バージョンでは指定自体ができない）
 - Webhook と完了ページのどちらが先に来ても壊れないように、`paid` への更新は「`pending` のときだけ更新する」条件付き更新にする
 - 合計 0 円（無料券だけ）の注文は Stripe を通さず、その場で `paid` にする
 
@@ -99,7 +99,7 @@ Stripe のモック方針: Checkout Session の作成はサービスクラス（
 | 参加者 | 3 | `customer1@example.com` 〜 `customer3@example.com` / `password` |
 | イベント | 6 | 公開 4（うち 1 は開催済み）、下書き 1、非公開 1。八幡平の体験イベントを想定した題名（例: 岩手山 朝焼けトレッキング、地熱蒸し料理教室、雪上ヨガ） |
 | 券種 | 各 1〜3 | 一般 3,000 円、学生 1,500 円、無料券 0 円 など。定員 5〜30 |
-| 注文 | 数件 | `paid` の注文と、30 分以上前の `pending` を混ぜる |
+| 注文 | 数件 | `paid` の注文と、35 分以上前の `pending` を混ぜる |
 
 - パスワードは全員 `password`。本番にはシーダーの管理者以外を投入しない
 - 画像はシーダー用に 6 枚を `database/seeders/images/` に置き、シーダーで `public` ディスクへコピーする

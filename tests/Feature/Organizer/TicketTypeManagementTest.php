@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Services\OrderService;
 use Livewire\Features\SupportTesting\Testable;
 use Livewire\Livewire;
 
@@ -504,5 +505,134 @@ describe('ticket types that have orders', function () {
         expect(deleteTicketTypeButtonsDisabled($page))->toBe([false]);
 
         $page->assertDontSee('注文のある券種は削除できません。');
+    });
+});
+
+describe('lowering the capacity of a ticket type that already sold', function () {
+    function ticketTypeWithOrder(OrderStatus $status, int $quantity, array $orderAttributes = [], int $capacity = 10): TicketType
+    {
+        $event = Event::factory()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['capacity' => $capacity]);
+        $order = Order::factory()->for($event)->create($orderAttributes);
+        $order->forceFill(['status' => $status])->save();
+        OrderItem::factory()->for($order)->for($ticketType)->create(['quantity' => $quantity]);
+
+        return $ticketType;
+    }
+
+    function editCapacityTo(TicketType $ticketType, int $capacity): Testable
+    {
+        return openEventEditPage($ticketType->event)
+            ->call('editTicketType', $ticketType->id)
+            ->set('ticketTypeForm.capacity', (string) $capacity)
+            ->call('saveTicketType');
+    }
+
+    test('rejects a capacity smaller than the paid quantity and keeps the capacity', function () {
+        $ticketType = ticketTypeWithOrder(OrderStatus::Paid, 6);
+
+        editCapacityTo($ticketType, 5)
+            ->assertHasErrors(['ticketTypeForm.capacity' => 'min'])
+            ->assertSee('定員は、販売済み・確保中の枚数（6枚）より少なくできません。');
+
+        expect($ticketType->fresh()->capacity)->toBe(10);
+    });
+
+    test('accepts a capacity equal to the sold quantity', function () {
+        $ticketType = ticketTypeWithOrder(OrderStatus::Paid, 6);
+
+        editCapacityTo($ticketType, 6)->assertHasNoErrors();
+
+        expect($ticketType->fresh()->capacity)->toBe(6);
+    });
+
+    test('counts a recent pending order because it holds tickets', function () {
+        $ticketType = ticketTypeWithOrder(OrderStatus::Pending, 4);
+
+        editCapacityTo($ticketType, 3)->assertHasErrors(['ticketTypeForm.capacity' => 'min']);
+
+        expect($ticketType->fresh()->capacity)->toBe(10);
+    });
+
+    test('does not count a pending order that no longer holds tickets or a cancelled order', function (OrderStatus $status, array $orderAttributes) {
+        $ticketType = ticketTypeWithOrder($status, 4, $orderAttributes);
+
+        editCapacityTo($ticketType, 1)->assertHasNoErrors();
+
+        expect($ticketType->fresh()->capacity)->toBe(1);
+    })->with([
+        'an old pending order' => [OrderStatus::Pending, ['created_at' => now()->subMinutes(OrderService::PENDING_MINUTES + 1)]],
+        'a cancelled order' => [OrderStatus::Cancelled, []],
+        'a refunded order' => [OrderStatus::Refunded, []],
+    ]);
+
+    test('does not count the orders of another ticket type', function () {
+        $ticketType = ticketTypeWithOrder(OrderStatus::Paid, 6);
+        $other = TicketType::factory()->for($ticketType->event)->create(['capacity' => 10]);
+
+        editCapacityTo($other, 1)->assertHasNoErrors();
+
+        expect($other->fresh()->capacity)->toBe(1);
+    });
+
+    test('lets the organizer change other fields of a sold-out ticket type without touching the capacity', function () {
+        $ticketType = ticketTypeWithOrder(OrderStatus::Paid, 10);
+
+        openEventEditPage($ticketType->event)
+            ->call('editTicketType', $ticketType->id)
+            ->set('ticketTypeForm.name', '一般（改）')
+            ->call('saveTicketType')
+            ->assertHasNoErrors();
+
+        expect($ticketType->fresh())->name->toBe('一般（改）')->capacity->toBe(10);
+    });
+
+    test('does not limit the capacity of a new ticket type', function () {
+        $event = Event::factory()->create();
+
+        openEventEditPage($event)
+            ->set(validTicketTypeInput(['capacity' => 1]))
+            ->call('saveTicketType')
+            ->assertHasNoErrors();
+
+        expect($event->ticketTypes()->sole()->capacity)->toBe(1);
+    });
+
+    test('still requires the capacity to be at least 1', function () {
+        $ticketType = ticketTypeWithOrder(OrderStatus::Cancelled, 4);
+
+        editCapacityTo($ticketType, 0)->assertHasErrors(['ticketTypeForm.capacity' => 'min']);
+    });
+});
+
+describe('capacity limit when orders arrive during editing', function () {
+    test('judges the lower limit when saving, not when the edit started', function () {
+        $ticketType = ticketTypeWithOrder(OrderStatus::Cancelled, 1);
+
+        $component = openEventEditPage($ticketType->event)
+            ->call('editTicketType', $ticketType->id)
+            ->set('ticketTypeForm.capacity', '3');
+
+        $order = Order::factory()->for($ticketType->event)->create();
+        $order->forceFill(['status' => OrderStatus::Paid])->save();
+        OrderItem::factory()->for($order)->for($ticketType)->create(['quantity' => 7]);
+
+        $component->call('saveTicketType')
+            ->assertHasErrors(['ticketTypeForm.capacity' => 'min'])
+            ->assertSee('定員は、販売済み・確保中の枚数（7枚）より少なくできません。');
+
+        expect($ticketType->fresh()->capacity)->toBe(10);
+    });
+});
+
+describe('deleting a ticket type that sold', function () {
+    test('keeps a ticket type with a paid order and tells the organizer', function () {
+        $ticketType = ticketTypeWithOrder(OrderStatus::Paid, 2);
+
+        openEventEditPage($ticketType->event)
+            ->call('deleteTicketType', $ticketType->id)
+            ->assertDispatched('toast-show', fn (string $name, array $params) => str_contains(json_encode($params, JSON_UNESCAPED_UNICODE), '注文のある券種は削除できません'));
+
+        expect(TicketType::whereKey($ticketType->id)->exists())->toBeTrue();
     });
 });

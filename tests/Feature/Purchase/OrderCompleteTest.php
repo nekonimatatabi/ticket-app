@@ -374,3 +374,26 @@ test('returns 404 to an organizer of another event who opens the page with the s
 
     expect($order->fresh()->status)->toBe(OrderStatus::Pending);
 });
+
+test('tells the buyer to ask about a refund when a cancelled order turns out to have been paid', function () {
+    $buyer = User::factory()->create();
+    $order = Order::factory()->for($buyer)->cancelled()->create();
+
+    $this->actingAs($buyer)
+        ->get(route('orders.complete', $order))
+        ->assertOk()
+        ->assertSeeHtml('data-test="cancelled-note"')
+        ->assertSee('返金の手続き')
+        ->assertDontSeeHtml('wire:poll');
+});
+
+test('does not show the refund note for a pending or a paid order', function (string $state) {
+    $buyer = User::factory()->create();
+    $order = Order::factory()->for($buyer)->create();
+
+    if ($state === 'paid') {
+        $order->forceFill(['status' => OrderStatus::Paid, 'paid_at' => now()])->save();
+    }
+
+    $this->actingAs($buyer)->get(route('orders.complete', $order))->assertDontSeeHtml('data-test="cancelled-note"');
+})->with(['pending', 'paid']);

@@ -35,4 +35,11 @@ Route::middleware(['auth', 'verified', 'role:organizer'])
         Route::livewire('events/{event}/edit', 'pages::organizer.events.edit')->name('events.edit');
     });
 
+Route::middleware(['auth', 'verified', 'role:organizer,admin'])
+    ->prefix('organizer')
+    ->name('organizer.')
+    ->group(function () {
+        Route::livewire('events/{event}/orders', 'pages::organizer.events.orders')->name('events.orders');
+    });
+
 require __DIR__.'/settings.php';

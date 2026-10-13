@@ -27,9 +27,10 @@ test('keeps the order pending and tells the buyer when the Stripe checkout sessi
     $buyer = User::factory()->create();
     $order = Order::factory()->for($buyer)->create(['stripe_checkout_session_id' => 'cs_test_123']);
 
-    $this->mock(CheckoutService::class)
-        ->expects('expireSession')
-        ->andThrow(new InvalidRequestException('Only Checkout Sessions with status open can be expired.'));
+    $this->mock(CheckoutService::class, function ($mock) {
+        $mock->expects('expireSession')->andThrow(new InvalidRequestException('Only Checkout Sessions with status open can be expired.'));
+        $mock->expects('retrieveSession')->andThrow(new InvalidRequestException('No such checkout.session.'));
+    });
 
     $this->actingAs($buyer)
         ->get(route('orders.cancel', $order))

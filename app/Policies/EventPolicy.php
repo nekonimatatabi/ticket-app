@@ -34,9 +34,20 @@ class EventPolicy
         return $this->isOwner($user, $event);
     }
 
+    /**
+     * 所有者だけが、注文が1件もないイベントを削除できる。注文は売上の記録で、外部キー（restrict）でも消せない。
+     */
     public function delete(User $user, Event $event): bool
     {
-        return $this->isOwner($user, $event);
+        return $this->isOwner($user, $event) && ! $event->orders()->exists();
+    }
+
+    /**
+     * イベントの売上と注文の一覧は、所有者と管理者だけが見られる。
+     */
+    public function viewOrders(User $user, Event $event): bool
+    {
+        return $user->isAdmin() || $this->isOwner($user, $event);
     }
 
     public function unpublish(User $user, Event $event): bool

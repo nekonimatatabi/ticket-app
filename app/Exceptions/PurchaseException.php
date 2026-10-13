@@ -40,4 +40,20 @@ class PurchaseException extends RuntimeException
     {
         return new self("「{$ticketType->name}」は残り枚数が足りません（残り{$ticketType->remaining()}枚）。");
     }
+
+    public static function tooManyTickets(int $limit, int $held): self
+    {
+        $message = "1つのイベントで購入できるのは、1人あたり合計{$limit}枚までです。";
+
+        if ($held > 0) {
+            $message .= "（購入済み・手続き中の{$held}枚を含みます）";
+        }
+
+        return new self($message);
+    }
+
+    public static function pendingOrderExists(): self
+    {
+        return new self('支払い手続き中の注文があります。しばらくしてから、もう一度お試しください。');
+    }
 }

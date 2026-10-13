@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Services\OrderService;
 
 test('shows the details of a published event to guests', function () {
     app()->setLocale('ja');
@@ -143,10 +144,10 @@ describe('ticket types', function () {
         $this->get(route('events.show', $event))->assertSee('残り5枚');
     });
 
-    test('does not subtract pending orders older than 30 minutes', function () {
+    test('does not subtract pending orders older than the holding time', function () {
         $event = Event::factory()->published()->create();
         $ticketType = TicketType::factory()->for($event)->create(['capacity' => 10]);
-        $expired = Order::factory()->for($event)->create(['status' => OrderStatus::Pending, 'created_at' => now()->subMinutes(31)]);
+        $expired = Order::factory()->for($event)->create(['status' => OrderStatus::Pending, 'created_at' => now()->subMinutes(OrderService::PENDING_MINUTES + 1)]);
         OrderItem::factory()->for($ticketType)->for($expired, 'order')->create(['quantity' => 4]);
 
         $this->get(route('events.show', $event))->assertSee('残り10枚');
@@ -166,13 +167,13 @@ describe('ticket types', function () {
         'paid' => [OrderStatus::Paid, 0, '残り6枚'],
         'old paid' => [OrderStatus::Paid, 86400, '残り6枚'],
         'pending just now' => [OrderStatus::Pending, 0, '残り6枚'],
-        'pending exactly 30 minutes ago' => [OrderStatus::Pending, 1800, '残り6枚'],
-        'pending 30 minutes and 1 second ago' => [OrderStatus::Pending, 1801, '残り10枚'],
+        'pending exactly the holding time ago' => [OrderStatus::Pending, OrderService::PENDING_MINUTES * 60, '残り6枚'],
+        'pending the holding time and 1 second ago' => [OrderStatus::Pending, OrderService::PENDING_MINUTES * 60 + 1, '残り10枚'],
         'cancelled' => [OrderStatus::Cancelled, 0, '残り10枚'],
         'refunded' => [OrderStatus::Refunded, 0, '残り10枚'],
     ]);
 
-    test('shows sold out when recent pending orders take every ticket and frees them after 30 minutes', function (int $secondsAgo, string $expected, string $unexpected) {
+    test('shows sold out when recent pending orders take every ticket and frees them after the holding time', function (int $secondsAgo, string $expected, string $unexpected) {
         $this->travelTo('2030-05-01 12:00:00');
         $event = Event::factory()->published()->create();
         $ticketType = TicketType::factory()->for($event)->create(['capacity' => 5, 'sales_starts_at' => now()->subDay(), 'sales_ends_at' => now()->addDay()]);
@@ -184,8 +185,8 @@ describe('ticket types', function () {
             ->assertSee($expected)
             ->assertDontSee($unexpected);
     })->with([
-        'pending exactly 30 minutes ago' => [1800, '売り切れ', '残り5枚'],
-        'pending 30 minutes and 1 second ago' => [1801, '残り5枚', '売り切れ'],
+        'pending exactly the holding time ago' => [OrderService::PENDING_MINUTES * 60, '売り切れ', '残り5枚'],
+        'pending the holding time and 1 second ago' => [OrderService::PENDING_MINUTES * 60 + 1, '残り5枚', '売り切れ'],
     ]);
 
     test('shows sold out when no tickets remain', function () {

@@ -106,7 +106,7 @@ erDiagram
 | sales_starts_at | datetime | NOT NULL | 販売開始 |
 | sales_ends_at | datetime | NOT NULL | 販売終了。開始より後であることはバリデーションで確認 |
 
-画面の入力は、券種名が50文字以内、価格が 0〜10,000,000 の整数、定員が 1〜100,000 の整数。券種が1つも無いイベントは公開できない。公開中のイベントの最後の券種は削除できない。
+画面の入力は、券種名が50文字以内、価格が 0〜10,000,000 の整数、定員が 1〜100,000 の整数。券種が1つも無いイベントは公開できない。公開中のイベントの最後の券種は削除できない。券種を編集するとき、定員は「支払い済み＋確保中（`PENDING_MINUTES` 分以内の支払い待ち）の枚数」（`TicketType::reservedQuantity()`）より少なくできない。この下限は画面から書き換えられないよう、保存のたびにサーバー側で DB から求める。
 | timestamps | | | |
 
 ### orders
@@ -172,14 +172,22 @@ erDiagram
          − SUM(order_items.quantity)
            ※ 対象は、その券種の明細のうち、親の orders が次のどちらかのもの
              ・status が paid
-             ・status が pending で、created_at が PENDING_MINUTES（30）分以内
+             ・status が pending で、created_at が PENDING_MINUTES（35）分以内
 ```
 
-- **`pending` は30分だけ差し引く。** 支払い待ちの人が決済している間に、同じ枚数が別の人へ売れてしまうのを防ぐため。30分を過ぎた `pending` は、放置されたものとして数えない（境界の「ちょうど30分前」は数える）。時間は `OrderService::PENDING_MINUTES` で持ち、Stripe Checkout Session の有効期限（`expires_at`）にも同じ値を使う（Stripe は30分未満を指定できないため）。
+- **`pending` は35分だけ差し引く。** 支払い待ちの人が決済している間に、同じ枚数が別の人へ売れてしまうのを防ぐため。35分を過ぎた `pending` は、放置されたものとして数えない（境界の「ちょうど35分前」は数える）。時間は `OrderService::PENDING_MINUTES` で持つ。Stripe Checkout Session の有効期限（`expires_at`、`OrderService::CHECKOUT_MINUTES`）は30分で、押さえの時間より短くする。決済ページで払える間は、必ず枠が残っているようにするため（Stripe は30分未満を指定できない）。
+- **押さえが切れた後に支払いが確定するとき**（Webhook の遅れなど）は、`markAsPaid` が券種の行をロックして定員を確認し直す。すでに定員を超えるなら、チケットを発行せず、注文は `pending` のまま `Log::error` に「返金が必要」と残す（返金は運用で行う）。
 - **`cancelled` / `refunded` は数えない。**
 - **残り枚数は 0 未満にしない。** 同時購入の競合で売りすぎた場合も、画面には負の数を出さない。
 - **`paid` になっても二重に引かない。** 同じ明細が `pending` から `paid` に変わるだけで、明細の行は増えないため。
 - **`tickets` の行数は数えない。** 発行は支払い確定後なので、`pending` の分が漏れる。
+
+### 同時購入と買い占めの守り
+
+- **行ロック。** `createOrder` は、トランザクションの最初に、買う券種の行を `lockForUpdate()`（id 順）でロックし、そのあとで残り枚数を数える。同時に買う人は、ロックが外れるまで待ち、数え直した枚数で成否が決まる。定員を変える券種の編集（`saveTicketType`）も、同じ行ロックの中で下限を確認する。
+- **1人あたりの上限。** 1つのイベントで、1人が持てるのは合計 `OrderService::MAX_TICKETS_PER_EVENT`（10）枚まで（支払い済み＋枠を押さえている支払い待ち）。無料券にも適用する。
+- **古い支払い待ちの取り消し。** 「支払いへ進む」を押すと、同じ人のこのイベントの支払い待ちの注文を先に取り消す（Stripe の決済ページを失効させてから）。取り消せないとき（支払いが済んだ直後など）は購入を止める。
+- **回数制限。** 「支払いへ進む」は、1人が1分間に5回まで。
 
 ### 購入時のチェック（C9）
 
@@ -190,6 +198,7 @@ erDiagram
 3. 券種がそのイベントのものである（別のイベントの券種や存在しない ID は不可）。
 4. 現在時刻が `sales_starts_at` 以上、`sales_ends_at` 以下である（`TicketType::isOnSale()`）。
 5. 選んだ枚数が残り枚数以下である（`TicketType::remaining()`）。
+6. この人がこのイベントで持つ枚数（支払い済み＋確保中）と合わせて、`MAX_TICKETS_PER_EVENT`（10）枚以内である。
 
 金額は引数で受け取らず、券種の `price` から計算する。明細の `unit_price` には、注文時点の `price` を保存する。
 
@@ -205,5 +214,5 @@ $event->ticketTypes()->withReservedQuantity()->get();
 
 ### 既知の制約
 
-- **期限切れの `pending` は、状態を変えずに集計から外すだけ。** 30分を過ぎた `pending` は `pending` のまま残る。`cancelled` などへ変える後始末が必要になったら、スケジュールで処理する。
+- **期限切れの `pending` は、状態を変えずに集計から外すだけ。** 35分を過ぎた `pending` は、決済ページ（Checkout Session）の期限が切れたときの Webhook `checkout.session.expired` で `cancelled` になる。Webhook が届かなかった分は、同じ人の次の購入のときに `OrderService::abandonPendingOrders()` が取り消す（Stripe の失効の API が失敗したら、Session の状態を取得し、失効済みなら取り消す。支払い済みなら確定する。後払い型で入金待ちなら、そのまま残す）。`cancelled` などへ変える後始末が必要になったら、スケジュールで処理する。
 - **同時購入の競合は扱わない。** 2人が同時に最後の1枚を買うと、チェックをすり抜ける可能性がある。トランザクションと行ロックによる対策は拡張 E2 で扱う。

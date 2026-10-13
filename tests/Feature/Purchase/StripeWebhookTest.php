@@ -1,8 +1,10 @@
 <?php
 
 use App\Enums\OrderStatus;
+use App\Mail\OrderPaidMail;
 use App\Models\Ticket;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 
 test('marks the order as paid and issues one ticket per item quantity for a correctly signed event', function () {
     $order = pendingOrder([2, 3]);
@@ -253,4 +255,137 @@ test('finds the order by the session id and not by the order id in the metadata 
     postWebhook($payload, stripeSignature($payload))->assertOk();
 
     expect($order->fresh()->status)->toBe(OrderStatus::Paid);
+});
+
+describe('payment methods that are paid later (convenience store payment and the like)', function () {
+    test('keeps the order pending when the session is completed but not paid yet, and confirms it when the money arrives', function () {
+        Mail::fake();
+        $order = pendingOrder([2]);
+
+        $unpaid = sessionCompletedPayload($order, ['payment_status' => 'unpaid']);
+        postWebhook($unpaid, stripeSignature($unpaid))->assertOk();
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Pending)
+            ->and(Ticket::count())->toBe(0);
+        Mail::assertNothingSent();
+
+        $paid = sessionCompletedPayload($order, [], 'checkout.session.async_payment_succeeded');
+        postWebhook($paid, stripeSignature($paid))->assertOk();
+
+        expect($order->fresh())
+            ->status->toBe(OrderStatus::Paid)
+            ->stripe_payment_intent_id->toBe('pi_test_123')
+            ->and(Ticket::count())->toBe(2);
+        Mail::assertSent(OrderPaidMail::class, 1);
+    });
+
+    test('does not issue the tickets twice when the money notification arrives twice', function () {
+        $order = pendingOrder([2]);
+        $payload = sessionCompletedPayload($order, [], 'checkout.session.async_payment_succeeded');
+
+        postWebhook($payload, stripeSignature($payload))->assertOk();
+        postWebhook($payload, stripeSignature($payload))->assertOk();
+
+        expect(Ticket::count())->toBe(2);
+    });
+
+    test('does not confirm on a money notification that does not match the order', function (array $overrides) {
+        $order = pendingOrder([2]);
+        $payload = sessionCompletedPayload($order, $overrides, 'checkout.session.async_payment_succeeded');
+
+        postWebhook($payload, stripeSignature($payload))->assertOk();
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Pending)
+            ->and(Ticket::count())->toBe(0);
+    })->with([
+        'still unpaid' => [['payment_status' => 'unpaid']],
+        'another amount' => [['amount_total' => 1]],
+        'another currency' => [['currency' => 'usd']],
+        'a session id nobody has' => [['id' => 'cs_test_from_another_environment']],
+    ]);
+
+    test('cancels the order and gives the tickets back when the payment fails', function () {
+        $order = pendingOrder([3]);
+        $ticketType = $order->items()->sole()->ticketType;
+        $ticketType->forceFill(['capacity' => 5])->save();
+
+        expect($ticketType->fresh()->remaining())->toBe(2);
+
+        $payload = sessionCompletedPayload($order, ['payment_status' => 'unpaid'], 'checkout.session.async_payment_failed');
+        postWebhook($payload, stripeSignature($payload))->assertOk();
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Cancelled)
+            ->and(Ticket::count())->toBe(0)
+            ->and($ticketType->fresh()->remaining())->toBe(5);
+    });
+
+    test('does not cancel an order that is already paid when a failure notification arrives', function () {
+        $order = pendingOrder([2]);
+        $paid = sessionCompletedPayload($order);
+        postWebhook($paid, stripeSignature($paid))->assertOk();
+
+        $failed = sessionCompletedPayload($order, ['payment_status' => 'unpaid'], 'checkout.session.async_payment_failed');
+        postWebhook($failed, stripeSignature($failed))->assertOk();
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Paid)
+            ->and(Ticket::count())->toBe(2);
+    });
+
+    test('ignores a failure notification for a session nobody has', function () {
+        $order = pendingOrder([2]);
+        $payload = sessionCompletedPayload($order, ['id' => 'cs_test_from_another_environment'], 'checkout.session.async_payment_failed');
+
+        postWebhook($payload, stripeSignature($payload))->assertOk();
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Pending);
+    });
+
+    test('rejects an unsigned money notification', function () {
+        $order = pendingOrder([2]);
+        $payload = sessionCompletedPayload($order, [], 'checkout.session.async_payment_succeeded');
+
+        postWebhook($payload, stripeSignature($payload, 'whsec_other'))->assertStatus(400);
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Pending)
+            ->and(Ticket::count())->toBe(0);
+    });
+});
+
+describe('a checkout page that expired without being paid', function () {
+    test('cancels the pending order and gives the tickets back', function () {
+        $order = pendingOrder([3]);
+        $ticketType = $order->items()->sole()->ticketType;
+        $ticketType->forceFill(['capacity' => 5])->save();
+
+        $payload = sessionCompletedPayload($order, ['payment_status' => 'unpaid', 'status' => 'expired'], 'checkout.session.expired');
+        postWebhook($payload, stripeSignature($payload))->assertOk();
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Cancelled)
+            ->and($ticketType->fresh()->remaining())->toBe(5)
+            ->and(Ticket::count())->toBe(0);
+    });
+
+    test('does not cancel an order that is already paid', function () {
+        $order = pendingOrder([2]);
+        $paid = sessionCompletedPayload($order);
+        postWebhook($paid, stripeSignature($paid))->assertOk();
+
+        $expired = sessionCompletedPayload($order, ['payment_status' => 'unpaid'], 'checkout.session.expired');
+        postWebhook($expired, stripeSignature($expired))->assertOk();
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Paid)
+            ->and(Ticket::count())->toBe(2);
+    });
+
+    test('ignores a session that belongs to no order and an unsigned notification', function () {
+        $order = pendingOrder([2]);
+
+        $unknown = sessionCompletedPayload($order, ['id' => 'cs_test_from_another_environment'], 'checkout.session.expired');
+        postWebhook($unknown, stripeSignature($unknown))->assertOk();
+
+        $unsigned = sessionCompletedPayload($order, [], 'checkout.session.expired');
+        postWebhook($unsigned, stripeSignature($unsigned, 'whsec_other'))->assertStatus(400);
+
+        expect($order->fresh()->status)->toBe(OrderStatus::Pending);
+    });
 });

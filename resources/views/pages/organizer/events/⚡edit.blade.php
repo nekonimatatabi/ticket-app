@@ -7,6 +7,7 @@ use App\Models\Event;
 use App\Models\TicketType;
 use Flux\Flux;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\DB;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -123,13 +124,16 @@ new #[Title('イベントを編集')] class extends Component {
     {
         $this->authorize('update', $this->event);
 
-        $payload = $this->ticketTypeForm->validatedPayload();
-
         if ($this->editingTicketTypeId === null) {
-            $this->event->ticketTypes()->create($payload);
+            $this->event->ticketTypes()->create($this->ticketTypeForm->validatedPayload());
             $message = '券種を追加しました。';
         } else {
-            $this->event->ticketTypes()->findOrFail($this->editingTicketTypeId)->update($payload);
+            // 購入と同じ行ロックの中で、確保済みの枚数を数えて更新する（検証のあとに購入が入って、定員を下回るのを防ぐ）
+            DB::transaction(function (): void {
+                $ticketType = $this->event->ticketTypes()->lockForUpdate()->findOrFail($this->editingTicketTypeId);
+
+                $ticketType->update($this->ticketTypeForm->validatedPayload($ticketType->reservedQuantity()));
+            });
             $message = '券種を更新しました。';
         }
 
@@ -183,7 +187,7 @@ new #[Title('イベントを編集')] class extends Component {
      */
     public function deleteEvent(): void
     {
-        $this->authorize('delete', $this->event);
+        $this->authorize('update', $this->event);
 
         if ($this->event->orders()->exists()) {
             Flux::toast(variant: 'danger', text: '注文があるため、イベントは削除できません。公開を止めるには、下書きに戻してください。');
@@ -191,6 +195,8 @@ new #[Title('イベントを編集')] class extends Component {
 
             return;
         }
+
+        $this->authorize('delete', $this->event);
 
         $this->event->delete();
 

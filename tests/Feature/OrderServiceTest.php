@@ -9,9 +9,12 @@ use App\Models\OrderItem;
 use App\Models\Ticket;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Services\CheckoutService;
 use App\Services\OrderService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Stripe\Exception\ApiConnectionException;
+use Stripe\Exception\InvalidRequestException;
 
 function placeOrder(User $user, Event $event, array $quantities): Order
 {
@@ -25,7 +28,10 @@ function expectNothingWasOrdered(): void
 }
 
 test('has the purchase limits as constants', function () {
-    expect(OrderService::PENDING_MINUTES)->toBe(30)
+    expect(OrderService::PENDING_MINUTES)->toBe(35)
+        ->and(OrderService::CHECKOUT_MINUTES)->toBe(30)
+        ->and(OrderService::PENDING_MINUTES)->toBeGreaterThan(OrderService::CHECKOUT_MINUTES)
+        ->and(OrderService::MAX_TICKETS_PER_EVENT)->toBe(10)
         ->and(OrderService::MAX_QUANTITY)->toBe(10);
 });
 
@@ -390,6 +396,295 @@ describe('marking an order as paid', function () {
         expect($order->fresh())
             ->status->toBe(OrderStatus::Pending)
             ->paid_at->toBeNull();
+    });
+});
+
+function holdingOrder(User $user, Event $event, TicketType $ticketType, OrderStatus $status, int $quantity, array $attributes = []): Order
+{
+    $order = Order::factory()->for($user)->for($event)->create($attributes);
+    $order->forceFill(['status' => $status])->save();
+    OrderItem::factory()->for($order)->for($ticketType)->create(['quantity' => $quantity]);
+
+    return $order;
+}
+
+describe('the limit per person and event', function () {
+    test('rejects an order that would take the person over the limit together with what they already hold', function () {
+        $user = User::factory()->create();
+        $event = Event::factory()->published()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['capacity' => 50]);
+        holdingOrder($user, $event, $ticketType, OrderStatus::Paid, 6);
+
+        expect(fn () => placeOrder($user, $event, [$ticketType->id => 5]))
+            ->toThrow(PurchaseException::class, '1つのイベントで購入できるのは、1人あたり合計10枚までです。（購入済み・手続き中の6枚を含みます）');
+
+        expect(Order::count())->toBe(1);
+    });
+
+    test('accepts an order that reaches the limit exactly', function () {
+        $user = User::factory()->create();
+        $event = Event::factory()->published()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['capacity' => 50]);
+        holdingOrder($user, $event, $ticketType, OrderStatus::Paid, 6);
+
+        expect(placeOrder($user, $event, [$ticketType->id => 4]))->toBeInstanceOf(Order::class);
+    });
+
+    test('applies to free tickets too, across ticket types', function () {
+        $user = User::factory()->create();
+        $event = Event::factory()->published()->create();
+        $first = TicketType::factory()->for($event)->create(['price' => 0, 'capacity' => 50]);
+        $second = TicketType::factory()->for($event)->create(['price' => 0, 'capacity' => 50]);
+        holdingOrder($user, $event, $first, OrderStatus::Paid, 6);
+
+        expect(fn () => placeOrder($user, $event, [$second->id => 5]))->toThrow(PurchaseException::class);
+    });
+
+    test('counts a recent pending order because it holds tickets', function () {
+        $user = User::factory()->create();
+        $event = Event::factory()->published()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['capacity' => 50]);
+        holdingOrder($user, $event, $ticketType, OrderStatus::Pending, 8);
+
+        expect(fn () => placeOrder($user, $event, [$ticketType->id => 3]))->toThrow(PurchaseException::class);
+    });
+
+    test('does not count what no longer counts or belongs to someone or something else', function (string $case) {
+        $user = User::factory()->create();
+        $event = Event::factory()->published()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['capacity' => 50]);
+
+        match ($case) {
+            'a cancelled order' => holdingOrder($user, $event, $ticketType, OrderStatus::Cancelled, 9),
+            'a refunded order' => holdingOrder($user, $event, $ticketType, OrderStatus::Refunded, 9),
+            'a pending order past the holding time' => holdingOrder($user, $event, $ticketType, OrderStatus::Pending, 9, ['created_at' => now()->subMinutes(OrderService::PENDING_MINUTES + 1)]),
+            'another person' => holdingOrder(User::factory()->create(), $event, $ticketType, OrderStatus::Paid, 9),
+            'another event' => (function () use ($user) {
+                $other = Event::factory()->published()->create();
+                holdingOrder($user, $other, TicketType::factory()->for($other)->create(['capacity' => 50]), OrderStatus::Paid, 9);
+            })(),
+        };
+
+        expect(placeOrder($user, $event, [$ticketType->id => 10]))->toBeInstanceOf(Order::class);
+    })->with([
+        'a cancelled order',
+        'a refunded order',
+        'a pending order past the holding time',
+        'another person',
+        'another event',
+    ]);
+});
+
+describe('abandoning a pending order', function () {
+    test('expires the Stripe checkout session first and then cancels the order', function () {
+        $order = pendingOrder([2]);
+
+        $this->mock(CheckoutService::class)->expects('expireSession')->with($order->stripe_checkout_session_id);
+
+        expect(app(OrderService::class)->abandon($order))->toBeTrue()
+            ->and($order->fresh()->status)->toBe(OrderStatus::Cancelled);
+    });
+
+    test('cancels an order that has no checkout session without calling Stripe', function () {
+        $order = pendingOrder([2]);
+        $order->forceFill(['stripe_checkout_session_id' => null])->save();
+
+        $this->mock(CheckoutService::class)->shouldNotReceive('expireSession');
+
+        expect(app(OrderService::class)->abandon($order))->toBeTrue()
+            ->and($order->fresh()->status)->toBe(OrderStatus::Cancelled);
+    });
+
+    test('leaves the order alone when the session cannot be expired', function () {
+        Log::spy();
+        $order = pendingOrder([2]);
+
+        $this->mock(CheckoutService::class, function ($mock) {
+            $mock->expects('expireSession')->andThrow(new ApiConnectionException('down'));
+            $mock->expects('retrieveSession')->andThrow(new ApiConnectionException('down'));
+        });
+
+        expect(app(OrderService::class)->abandon($order))->toBeFalse()
+            ->and($order->fresh()->status)->toBe(OrderStatus::Pending);
+
+        Log::shouldHaveReceived('warning')->once();
+    });
+
+    test('cancels the order when the session can no longer be expired because it has already expired by itself', function () {
+        $order = pendingOrder([2]);
+        $session = stripeSession($order, ['status' => 'expired', 'payment_status' => 'unpaid']);
+
+        $this->mock(CheckoutService::class, function ($mock) use ($session) {
+            $mock->expects('expireSession')->andThrow(new InvalidRequestException('Only Checkout Sessions with a status of "open" can be expired.'));
+            $mock->expects('retrieveSession')->andReturn($session);
+        });
+
+        expect(app(OrderService::class)->abandon($order))->toBeTrue()
+            ->and($order->fresh()->status)->toBe(OrderStatus::Cancelled);
+    });
+
+    test('confirms the order and does not cancel it when the session turns out to be paid', function () {
+        $order = pendingOrder([2]);
+        $session = stripeSession($order, ['status' => 'complete']);
+
+        $this->mock(CheckoutService::class, function ($mock) use ($session) {
+            $mock->expects('expireSession')->andThrow(new InvalidRequestException('Only Checkout Sessions with a status of "open" can be expired.'));
+            $mock->expects('retrieveSession')->andReturn($session);
+        });
+
+        expect(app(OrderService::class)->abandon($order))->toBeFalse()
+            ->and($order->fresh()->status)->toBe(OrderStatus::Paid)
+            ->and(Ticket::count())->toBe(2);
+    });
+
+    test('leaves the order alone when the session is completed but the money has not arrived yet', function () {
+        Log::spy();
+        $order = pendingOrder([2]);
+        $session = stripeSession($order, ['status' => 'complete', 'payment_status' => 'unpaid']);
+
+        $this->mock(CheckoutService::class, function ($mock) use ($session) {
+            $mock->expects('expireSession')->andThrow(new InvalidRequestException('Only Checkout Sessions with a status of "open" can be expired.'));
+            $mock->expects('retrieveSession')->andReturn($session);
+        });
+
+        expect(app(OrderService::class)->abandon($order))->toBeFalse()
+            ->and($order->fresh()->status)->toBe(OrderStatus::Pending);
+
+        Log::shouldHaveReceived('warning')->once();
+    });
+
+    test('does nothing to an order that is already paid', function () {
+        $order = pendingOrder([2]);
+        $order->forceFill(['status' => OrderStatus::Paid, 'paid_at' => now()])->save();
+
+        $this->mock(CheckoutService::class)->shouldNotReceive('expireSession');
+
+        expect(app(OrderService::class)->abandon($order))->toBeFalse()
+            ->and($order->fresh()->status)->toBe(OrderStatus::Paid);
+    });
+
+    test('abandons only the pending orders of this person for this event', function () {
+        $user = User::factory()->create();
+        $event = Event::factory()->published()->create();
+        $mine = pendingOrder([1], $user);
+        $mine->forceFill(['event_id' => $event->id])->save();
+        $otherEvent = pendingOrder([1], $user);
+        $otherPerson = pendingOrder([1]);
+        $otherPerson->forceFill(['event_id' => $event->id])->save();
+
+        $this->mock(CheckoutService::class)->expects('expireSession')->once()->with($mine->stripe_checkout_session_id);
+
+        app(OrderService::class)->abandonPendingOrders($user, $event);
+
+        expect($mine->fresh()->status)->toBe(OrderStatus::Cancelled)
+            ->and($otherEvent->fresh()->status)->toBe(OrderStatus::Pending)
+            ->and($otherPerson->fresh()->status)->toBe(OrderStatus::Pending);
+    });
+
+    test('stops with a message when a pending order cannot be abandoned', function () {
+        $user = User::factory()->create();
+        $order = pendingOrder([1], $user);
+
+        $this->mock(CheckoutService::class, function ($mock) {
+            $mock->expects('expireSession')->andThrow(new ApiConnectionException('down'));
+            $mock->expects('retrieveSession')->andThrow(new ApiConnectionException('down'));
+        });
+
+        expect(fn () => app(OrderService::class)->abandonPendingOrders($user, $order->event))
+            ->toThrow(PurchaseException::class, '支払い手続き中の注文があります');
+    });
+});
+
+describe('confirming a payment after the holding time', function () {
+    function lateOrder(int $quantity, int $capacity): array
+    {
+        $event = Event::factory()->published()->create();
+        $ticketType = TicketType::factory()->for($event)->create(['capacity' => $capacity]);
+        $order = holdingOrder(User::factory()->create(), $event, $ticketType, OrderStatus::Pending, $quantity);
+
+        return [$order, $ticketType, $event];
+    }
+
+    test('confirms an order that is still inside the holding time without looking at the capacity', function () {
+        [$order] = lateOrder(2, 2);
+
+        expect(app(OrderService::class)->markAsPaid($order, 'pi_test_123'))->toBeTrue()
+            ->and(Ticket::count())->toBe(2);
+    });
+
+    test('confirms a late order when there is still room', function () {
+        [$order, $ticketType, $event] = lateOrder(2, 10);
+        holdingOrder(User::factory()->create(), $event, $ticketType, OrderStatus::Paid, 5);
+
+        $this->travel(OrderService::PENDING_MINUTES + 1)->minutes();
+
+        expect(app(OrderService::class)->markAsPaid($order, 'pi_test_123'))->toBeTrue()
+            ->and($order->fresh()->status)->toBe(OrderStatus::Paid)
+            ->and(Ticket::count())->toBe(2);
+    });
+
+    test('does not issue tickets for a late order that would exceed the capacity, cancels it, and logs that a refund is needed', function () {
+        Log::spy();
+        [$order, $ticketType, $event] = lateOrder(2, 10);
+
+        $this->travel(OrderService::PENDING_MINUTES + 1)->minutes();
+        holdingOrder(User::factory()->create(), $event, $ticketType, OrderStatus::Paid, 9);
+
+        expect(app(OrderService::class)->markAsPaid($order, 'pi_test_123'))->toBeFalse();
+
+        expect($order->fresh())
+            ->status->toBe(OrderStatus::Cancelled)
+            ->paid_at->toBeNull()
+            ->stripe_payment_intent_id->toBe('pi_test_123')
+            ->and(Ticket::count())->toBe(0);
+
+        Log::shouldHaveReceived('error')->once();
+    });
+
+    test('does not log the refund error again when the same payment is reported again', function () {
+        Log::spy();
+        [$order, $ticketType, $event] = lateOrder(2, 10);
+
+        $this->travel(OrderService::PENDING_MINUTES + 1)->minutes();
+        holdingOrder(User::factory()->create(), $event, $ticketType, OrderStatus::Paid, 9);
+
+        app(OrderService::class)->markAsPaid($order, 'pi_test_123');
+        app(OrderService::class)->markAsPaid($order, 'pi_test_123');
+        app(OrderService::class)->markAsPaid($order, 'pi_test_123');
+
+        Log::shouldHaveReceived('error')->once();
+        expect($order->fresh()->status)->toBe(OrderStatus::Cancelled);
+    });
+
+    test('counts the orders of other people that are still holding tickets', function () {
+        Log::spy();
+        [$order, $ticketType, $event] = lateOrder(2, 10);
+
+        $this->travel(OrderService::PENDING_MINUTES + 1)->minutes();
+        holdingOrder(User::factory()->create(), $event, $ticketType, OrderStatus::Pending, 9);
+
+        expect(app(OrderService::class)->markAsPaid($order, 'pi_test_123'))->toBeFalse();
+    });
+
+    test('does not count other people\'s orders that no longer hold tickets', function () {
+        [$order, $ticketType, $event] = lateOrder(2, 10);
+
+        $this->travel(OrderService::PENDING_MINUTES + 1)->minutes();
+        holdingOrder(User::factory()->create(), $event, $ticketType, OrderStatus::Cancelled, 9);
+        holdingOrder(User::factory()->create(), $event, $ticketType, OrderStatus::Pending, 9, ['created_at' => now()->subMinutes(OrderService::PENDING_MINUTES + 1)]);
+
+        expect(app(OrderService::class)->markAsPaid($order, 'pi_test_123'))->toBeTrue();
+    });
+
+    test('does not log a refund error for a late payment on an order that is already paid', function () {
+        Log::spy();
+        [$order] = lateOrder(2, 10);
+        $this->travel(OrderService::PENDING_MINUTES + 1)->minutes();
+
+        app(OrderService::class)->markAsPaid($order, 'pi_test_123');
+        app(OrderService::class)->markAsPaid($order, 'pi_test_123');
+
+        Log::shouldNotHaveReceived('error');
     });
 });
 

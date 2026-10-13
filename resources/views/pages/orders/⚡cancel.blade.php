@@ -2,11 +2,9 @@
 
 use App\Enums\OrderStatus;
 use App\Models\Order;
-use App\Services\CheckoutService;
 use App\Services\OrderService;
 use Livewire\Attributes\Title;
 use Livewire\Component;
-use Stripe\Exception\ApiErrorException;
 
 new #[Title('お支払いを中断しました')] class extends Component {
     public Order $order;
@@ -26,17 +24,9 @@ new #[Title('お支払いを中断しました')] class extends Component {
     {
         $this->authorize('cancel', $order);
 
-        if ($order->status === OrderStatus::Pending && $order->stripe_checkout_session_id !== null) {
-            try {
-                app(CheckoutService::class)->expireSession($order->stripe_checkout_session_id);
-            } catch (ApiErrorException) {
-                $this->couldNotCancel = true;
-            }
-        }
+        app(OrderService::class)->abandon($order);
 
-        if (! $this->couldNotCancel) {
-            app(OrderService::class)->cancel($order);
-        }
+        $this->couldNotCancel = $order->status === OrderStatus::Pending;
 
         $this->order = $order->load('event');
     }

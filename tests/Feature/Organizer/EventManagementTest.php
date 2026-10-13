@@ -315,6 +315,7 @@ describe('events that have orders', function () {
         'pending' => OrderStatus::Pending,
         'paid' => OrderStatus::Paid,
         'cancelled' => OrderStatus::Cancelled,
+        'refunded' => OrderStatus::Refunded,
     ]);
 
     test('disables the delete button and explains why', function () {
@@ -349,5 +350,48 @@ describe('events that have orders', function () {
 
         expect(Event::whereKey($event->id)->exists())->toBeFalse()
             ->and(Order::count())->toBe(1);
+    });
+});
+
+describe('deleting an event: who may do it and what goes with it', function () {
+    test('forbids another organizer before the order check, with or without orders', function (bool $hasOrders) {
+        $event = Event::factory()->create();
+        TicketType::factory()->for($event)->create();
+
+        if ($hasOrders) {
+            Order::factory()->for($event)->create();
+        }
+
+        $component = Livewire::actingAs($event->organizer)->test('pages::organizer.events.edit', ['event' => $event]);
+
+        $this->actingAs(User::factory()->organizer()->create());
+
+        $component->call('deleteEvent')
+            ->assertForbidden()
+            ->assertNotDispatched('toast-show');
+
+        expect(Event::whereKey($event->id)->exists())->toBeTrue()
+            ->and(TicketType::count())->toBe(1);
+    })->with([
+        'an event with orders' => true,
+        'an event without orders' => false,
+    ]);
+
+    test('deletes the ticket types with the event and makes the sales page 404', function () {
+        $event = Event::factory()->published()->create();
+        TicketType::factory()->count(2)->for($event)->create();
+        $survivor = TicketType::factory()->create();
+
+        Livewire::actingAs($event->organizer)
+            ->test('pages::organizer.events.edit', ['event' => $event])
+            ->call('deleteEvent')
+            ->assertRedirect(route('organizer.events.index'));
+
+        expect(TicketType::count())->toBe(1)
+            ->and(TicketType::whereKey($survivor->id)->exists())->toBeTrue();
+
+        $this->actingAs($event->organizer)
+            ->get(route('organizer.events.orders', $event->id))
+            ->assertNotFound();
     });
 });

@@ -24,7 +24,8 @@ class CheckoutService
      * 注文の Checkout Session を作り、決済ページの URL を返す。作った Session の ID は注文に保存する。
      *
      * 金額は注文時点の単価（order_items.unit_price）を使い、Stripe 側に商品は登録しない。
-     * Session の有効期限は、注文が枚数を押さえる時間（PENDING_MINUTES）と同じにする。
+     * Session の有効期限（CHECKOUT_MINUTES）は、注文が枚数を押さえる時間（PENDING_MINUTES）より短くする。
+     * 決済ページで払える間は、必ず枠が残っているようにするため。
      *
      * @throws ApiErrorException
      */
@@ -34,6 +35,9 @@ class CheckoutService
 
         $session = $this->stripe->checkout->sessions->create([
             'mode' => 'payment',
+            // アカウントで既定で有効な Managed Payments は、商品ごとの税コード（tax_code）が無いと Session を作れない。
+            // 商品を Stripe に登録しない（price_data を使う）この方式では、Session ごとに無効にする。
+            'managed_payments' => ['enabled' => false],
             'line_items' => $order->items->map(fn (OrderItem $item): array => [
                 'price_data' => [
                     'currency' => 'jpy',
@@ -44,7 +48,7 @@ class CheckoutService
                 ],
                 'quantity' => $item->quantity,
             ])->all(),
-            'expires_at' => now()->addMinutes(OrderService::PENDING_MINUTES)->getTimestamp(),
+            'expires_at' => now()->addMinutes(OrderService::CHECKOUT_MINUTES)->getTimestamp(),
             'metadata' => [
                 'order_id' => (string) $order->id,
             ],

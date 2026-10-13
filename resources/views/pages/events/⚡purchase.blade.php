@@ -7,12 +7,18 @@ use App\Models\User;
 use App\Services\CheckoutService;
 use App\Services\OrderService;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\RateLimiter;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 use Stripe\Exception\ApiErrorException;
 
 new #[Title('購入手続き')] class extends Component {
+    /**
+     * 「支払いへ進む」を1人が1分間に押せる回数。繰り返し押して、支払い待ちの注文で枠を押さえ続けるのを防ぐ。
+     */
+    private const MAX_ATTEMPTS_PER_MINUTE = 5;
+
     public Event $event;
 
     /**
@@ -82,6 +88,7 @@ new #[Title('購入手続き')] class extends Component {
 
     /**
      * 注文（支払い待ち）を作り、Stripe の決済ページへ進む。合計 0 円なら Stripe を通さず、その場で支払い済みにして完了画面へ進む。
+     * 同じ人の、このイベントの古い支払い待ちの注文は、先に取り消す（戻る操作やタブを閉じて残った注文で、枠を押さえ続けないため）。
      * 買えない場合は理由を表示する。決済ページを開けなかった場合は、注文を取り消して枠を戻し、選んだ枚数は残す（もう一度押せる）。
      */
     public function proceedToPayment(): void
@@ -99,8 +106,21 @@ new #[Title('購入手続き')] class extends Component {
             return;
         }
 
+        $limiterKey = "purchase:{$user->id}";
+
+        if (RateLimiter::tooManyAttempts($limiterKey, self::MAX_ATTEMPTS_PER_MINUTE)) {
+            $this->errorMessage = '操作が多すぎます。しばらくしてから、もう一度お試しください。';
+
+            return;
+        }
+
+        RateLimiter::hit($limiterKey, 60);
+
         try {
-            $order = app(OrderService::class)->createOrder($user, $this->event, $selected);
+            $orders = app(OrderService::class);
+
+            $orders->abandonPendingOrders($user, $this->event);
+            $order = $orders->createOrder($user, $this->event, $selected);
         } catch (PurchaseException $exception) {
             $this->errorMessage = $exception->getMessage();
 
@@ -119,7 +139,9 @@ new #[Title('購入手続き')] class extends Component {
 
         try {
             $checkoutUrl = app(CheckoutService::class)->createSession($order);
-        } catch (ApiErrorException) {
+        } catch (ApiErrorException $exception) {
+            report($exception);
+
             app(OrderService::class)->cancel($order);
             $this->errorMessage = '決済ページを開けませんでした。時間をおいてお試しください。';
 

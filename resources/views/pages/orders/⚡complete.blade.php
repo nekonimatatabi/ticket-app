@@ -75,6 +75,10 @@ new #[Title('購入の確認')] class extends Component {
         <flux:heading size="xl" level="1">この注文は購入できていません</flux:heading>
 
         <flux:text class="mt-4">注文の状態は「{{ $order->status->label() }}」です。</flux:text>
+
+        @if ($order->status === OrderStatus::Cancelled)
+            <flux:text class="mt-2" data-test="cancelled-note">すでにお支払いがお済みの場合は、返金の手続きをいたします。お手数ですが、主催者までお問い合わせください。</flux:text>
+        @endif
     @endif
 
     <dl class="mt-8 space-y-3">

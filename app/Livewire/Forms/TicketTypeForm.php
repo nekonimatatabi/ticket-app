@@ -64,11 +64,23 @@ class TicketTypeForm extends Form
     /**
      * 検証して、保存用の値を返す。価格と定員は整数にキャストする。
      *
+     * 定員の下限（すでに販売・確保された枚数）は、画面から書き換えられないよう、呼び出し側が DB から求めて渡す。
+     *
+     * @param  int  $minimumCapacity  定員の下限。新しい券種では 1
      * @return array{name: string, price: int, capacity: int, sales_starts_at: string, sales_ends_at: string}
      */
-    public function validatedPayload(): array
+    public function validatedPayload(int $minimumCapacity = 1): array
     {
-        $validated = $this->validate();
+        $minimumCapacity = max(1, $minimumCapacity);
+
+        $rules = $this->rules();
+        $rules['capacity'] = ['required', 'integer', "min:{$minimumCapacity}", 'max:100000'];
+
+        $messages = $minimumCapacity > 1
+            ? ['capacity.min' => "定員は、販売済み・確保中の枚数（{$minimumCapacity}枚）より少なくできません。"]
+            : [];
+
+        $validated = $this->validate($rules, $messages);
 
         return [
             'name' => $validated['name'],

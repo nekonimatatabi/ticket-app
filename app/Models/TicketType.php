@@ -89,7 +89,11 @@ class TicketType extends Model
         );
     }
 
-    private function reservedQuantity(): int
+    /**
+     * 枚数を押さえている注文（支払い済み＋PENDING_MINUTES 分以内の支払い待ち）の明細の枚数の合計。
+     * 定員は、この枚数より少なくできない。
+     */
+    public function reservedQuantity(): int
     {
         return (int) $this->orderItems()
             ->whereHas('order', self::onlyOrdersReservingStock(...))
@@ -103,7 +107,7 @@ class TicketType extends Model
      *
      * @param  Builder<TOrder>  $orders
      */
-    private static function onlyOrdersReservingStock(Builder $orders): void
+    public static function onlyOrdersReservingStock(Builder $orders): void
     {
         $orders->where(function (Builder $query) {
             $query->where('status', OrderStatus::Paid)

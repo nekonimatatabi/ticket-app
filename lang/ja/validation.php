@@ -286,5 +286,11 @@ return [
         'winner' => '受賞者',
         'work' => '仕事',
         'year' => '年',
+        'venue' => '会場',
+        'starts_at' => '開始日時',
+        'ends_at' => '終了日時',
+        'capacity' => '定員',
+        'sales_starts_at' => '販売開始',
+        'sales_ends_at' => '販売終了',
     ],
 ];
