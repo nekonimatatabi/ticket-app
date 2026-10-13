@@ -3,6 +3,7 @@
 namespace App\Mail;
 
 use App\Models\Order;
+use App\Models\OrderItem;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -33,7 +34,21 @@ class OrderPaidMail extends Mailable
             markdown: 'mail.orders.paid',
             with: [
                 'url' => route('orders.show', $this->order),
+                'lines' => $this->order->items->map(fn (OrderItem $item): array => [
+                    'name' => $this->escapeTableCell($item->ticketType->name),
+                    'quantity' => $item->quantity,
+                    'subtotal' => $item->quantity * $item->unit_price,
+                ])->all(),
             ],
         );
+    }
+
+    /**
+     * Markdown の表のセルに入れても、列がずれないようにする。主催者が入力した券種名に | や改行が入っていても、
+     * 次の列に値が紛れ込まない。
+     */
+    private function escapeTableCell(string $value): string
+    {
+        return str_replace(['|', "\r\n", "\n", "\r"], ['\|', ' ', ' ', ' '], $value);
     }
 }

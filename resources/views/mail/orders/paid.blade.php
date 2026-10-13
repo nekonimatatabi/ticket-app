@@ -17,8 +17,8 @@
 <x-mail::table>
 | 券種 | 枚数 | 小計 |
 | :-- | --: | --: |
-@foreach ($order->items as $item)
-| {{ $item->ticketType->name }} | {{ $item->quantity }}枚 | {{ number_format($item->quantity * $item->unit_price) }}円 |
+@foreach ($lines as $line)
+| {{ $line['name'] }} | {{ $line['quantity'] }}枚 | {{ number_format($line['subtotal']) }}円 |
 @endforeach
 </x-mail::table>
 

@@ -213,3 +213,59 @@ describe('edge cases of the purchase mail', function () {
         expect($other->fresh()->status)->toBe(OrderStatus::Pending);
     });
 });
+
+describe('text typed by users in the purchase mail', function () {
+    function renderedMailWith(array $event = [], array $ticketType = [], array $user = []): string
+    {
+        $buyer = User::factory()->create($user);
+        $event = Event::factory()->published()->create($event);
+        $order = Order::factory()->for($buyer)->for($event)->paid()->create(['total_amount' => 3000]);
+        OrderItem::factory()->for($order)->for(TicketType::factory()->for($event)->create($ticketType))
+            ->create(['quantity' => 1, 'unit_price' => 3000]);
+
+        return (new OrderPaidMail($order))->render();
+    }
+
+    test('does not turn markdown links in the text into links', function (string $field) {
+        $link = '[公式サイト](https://evil.example/login)';
+
+        $html = match ($field) {
+            'event title' => renderedMailWith(event: ['title' => $link]),
+            'venue' => renderedMailWith(event: ['venue' => $link]),
+            'ticket type name' => renderedMailWith(ticketType: ['name' => $link]),
+            'buyer name' => renderedMailWith(user: ['name' => $link]),
+        };
+
+        expect($html)->not->toContain('href="https://evil.example')
+            ->and($html)->toContain('公式サイト');
+    })->with(['event title', 'venue', 'ticket type name', 'buyer name']);
+
+    test('keeps the columns of the items table when a ticket type name has a pipe or a line break', function (string $name) {
+        $html = renderedMailWith(ticketType: ['name' => $name]);
+
+        preg_match('/<tr>(?:(?!<\/tr>).)*一般(?:(?!<\/tr>).)*<\/tr>/s', $html, $row);
+
+        expect($row)->not->toBeEmpty()
+            ->and($row[0])->toContain('999')
+            ->and($row[0])->toContain('1枚')
+            ->and($row[0])->toContain('3,000円')
+            ->and(substr_count($row[0], '<td'))->toBe(3);
+    })->with([
+        'a pipe' => '一般 | 999',
+        'a line break' => "一般\n| 999",
+    ]);
+
+    test('shows a raw URL in the event title as plain text and not as a link', function () {
+        $html = renderedMailWith(event: ['title' => 'https://evil.example/login']);
+
+        expect($html)->not->toContain('href="https://evil.example');
+    });
+
+    test('still shows normal link to the order', function () {
+        $buyer = User::factory()->create();
+        $order = Order::factory()->for($buyer)->paid()->create();
+        OrderItem::factory()->for($order)->create();
+
+        expect((new OrderPaidMail($order))->render())->toContain('href="'.route('orders.show', $order).'"');
+    });
+});
