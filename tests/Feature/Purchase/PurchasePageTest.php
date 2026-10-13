@@ -6,8 +6,13 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Services\CheckoutService;
 use Livewire\Features\SupportTesting\Testable;
 use Livewire\Livewire;
+
+beforeEach(function () {
+    $this->mock(CheckoutService::class)->allows('createSession')->andReturn('https://checkout.stripe.com/c/pay/cs_test_dummy');
+});
 
 function chooseTickets(Event $event, array $quantities): void
 {
@@ -90,7 +95,7 @@ describe('the table', function () {
 });
 
 describe('proceeding to payment', function () {
-    test('creates a pending order with items and goes to the completion page', function () {
+    test('creates a pending order with items and goes to the Stripe checkout page', function () {
         $user = User::factory()->create();
         $event = Event::factory()->published()->create();
         $general = TicketType::factory()->for($event)->create(['price' => 3000]);
@@ -100,7 +105,7 @@ describe('proceeding to payment', function () {
         openPurchasePage($user, $event)
             ->call('proceedToPayment')
             ->assertHasNoErrors()
-            ->assertRedirect(route('orders.complete', Order::query()->sole()));
+            ->assertRedirect('https://checkout.stripe.com/c/pay/cs_test_dummy');
 
         $order = Order::sole();
 
@@ -247,7 +252,7 @@ describe('quantity of 0 and invalid quantities', function () {
 
         openPurchasePage($user, $event)
             ->call('proceedToPayment')
-            ->assertRedirect(route('orders.complete', Order::sole()));
+            ->assertRedirect('https://checkout.stripe.com/c/pay/cs_test_dummy');
 
         expect(Order::sole()->total_amount)->toBe(2000)
             ->and(OrderItem::sole())

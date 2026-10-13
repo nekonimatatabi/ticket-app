@@ -22,7 +22,7 @@ function expectNothingWasOrdered(): void
 }
 
 test('has the purchase limits as constants', function () {
-    expect(OrderService::PENDING_MINUTES)->toBe(15)
+    expect(OrderService::PENDING_MINUTES)->toBe(30)
         ->and(OrderService::MAX_QUANTITY)->toBe(10);
 });
 

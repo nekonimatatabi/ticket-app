@@ -14,9 +14,10 @@ use Illuminate\Support\Facades\DB;
 class OrderService
 {
     /**
-     * 支払い待ちの注文が枚数を押さえておく時間（分）。
+     * 支払い待ちの注文が枚数を押さえておく時間（分）。Stripe Checkout Session の有効期限と同じ値にする。
+     * Stripe の expires_at は作成から30分以上先でなければ指定できないため、30分より短くはできない。
      */
-    public const PENDING_MINUTES = 15;
+    public const PENDING_MINUTES = 30;
 
     /**
      * 1つの券種で、1回の注文に入れられる最大枚数。
@@ -76,6 +77,22 @@ class OrderService
 
             return $order->load('items');
         });
+    }
+
+    /**
+     * 支払い待ちの注文を取り消して、押さえていた枠を戻す。
+     *
+     * 残り枚数は pending / paid の明細だけを数えるので、cancelled にすれば枠が戻る。
+     * 支払い済みや取り消し済みの注文は変えない（pending のときだけの条件付き更新）。
+     */
+    public function cancel(Order $order): void
+    {
+        Order::query()
+            ->whereKey($order->id)
+            ->where('status', OrderStatus::Pending)
+            ->update(['status' => OrderStatus::Cancelled]);
+
+        $order->refresh();
     }
 
     /**

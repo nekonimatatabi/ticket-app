@@ -170,10 +170,10 @@ erDiagram
          − SUM(order_items.quantity)
            ※ 対象は、その券種の明細のうち、親の orders が次のどちらかのもの
              ・status が paid
-             ・status が pending で、created_at が PENDING_MINUTES（15）分以内
+             ・status が pending で、created_at が PENDING_MINUTES（30）分以内
 ```
 
-- **`pending` は15分だけ差し引く。** 支払い待ちの人が決済している間に、同じ枚数が別の人へ売れてしまうのを防ぐため。15分を過ぎた `pending` は、放置されたものとして数えない（境界の「ちょうど15分前」は数える）。時間は `OrderService::PENDING_MINUTES` で持つ。
+- **`pending` は30分だけ差し引く。** 支払い待ちの人が決済している間に、同じ枚数が別の人へ売れてしまうのを防ぐため。30分を過ぎた `pending` は、放置されたものとして数えない（境界の「ちょうど30分前」は数える）。時間は `OrderService::PENDING_MINUTES` で持ち、Stripe Checkout Session の有効期限（`expires_at`）にも同じ値を使う（Stripe は30分未満を指定できないため）。
 - **`cancelled` / `refunded` は数えない。**
 - **残り枚数は 0 未満にしない。** 同時購入の競合で売りすぎた場合も、画面には負の数を出さない。
 - **`paid` になっても二重に引かない。** 同じ明細が `pending` から `paid` に変わるだけで、明細の行は増えないため。
@@ -203,5 +203,5 @@ $event->ticketTypes()->withReservedQuantity()->get();
 
 ### 既知の制約
 
-- **期限切れの `pending` は、状態を変えずに集計から外すだけ。** 15分を過ぎた `pending` は `pending` のまま残る。`cancelled` などへ変える後始末が必要になったら、スケジュールで処理する。
+- **期限切れの `pending` は、状態を変えずに集計から外すだけ。** 30分を過ぎた `pending` は `pending` のまま残る。`cancelled` などへ変える後始末が必要になったら、スケジュールで処理する。
 - **同時購入の競合は扱わない。** 2人が同時に最後の1枚を買うと、チェックをすり抜ける可能性がある。トランザクションと行ロックによる対策は拡張 E2 で扱う。

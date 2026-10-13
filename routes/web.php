@@ -10,6 +10,7 @@ Route::livewire('events/{event}', 'pages::events.show')->name('events.show');
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::livewire('events/{event}/purchase', 'pages::events.purchase')->name('events.purchase');
     Route::livewire('orders/{order}/complete', 'pages::orders.complete')->name('orders.complete');
+    Route::livewire('orders/{order}/cancel', 'pages::orders.cancel')->name('orders.cancel');
 
     Route::get('dashboard', function (Request $request) {
         return redirect(match ($request->user()->role) {

@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
+use Stripe\StripeClient;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -15,7 +16,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(StripeClient::class, fn (): StripeClient => new StripeClient([
+            // キー未設定（空文字）でもここで例外にせず、API 呼び出し時の認証エラーとして扱う
+            'api_key' => config('services.stripe.secret') ?: null,
+        ]));
     }
 
     /**

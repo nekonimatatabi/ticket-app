@@ -77,8 +77,8 @@ function reserveTickets(TicketType $ticketType, int $quantity, OrderStatus $stat
     return OrderItem::factory()->for($order)->for($ticketType)->create(['quantity' => $quantity]);
 }
 
-test('pending orders hold tickets for 15 minutes', function () {
-    expect(OrderService::PENDING_MINUTES)->toBe(15);
+test('pending orders hold tickets for 30 minutes', function () {
+    expect(OrderService::PENDING_MINUTES)->toBe(30);
 });
 
 test('remaining equals the capacity when nothing was ordered', function () {
@@ -95,7 +95,7 @@ test('remaining subtracts paid orders and recent pending orders', function () {
     expect($ticketType->remaining())->toBe(5);
 });
 
-test('remaining counts a pending order up to exactly 15 minutes old but not older', function (int $secondsAgo, int $expected) {
+test('remaining counts a pending order up to exactly 30 minutes old but not older', function (int $secondsAgo, int $expected) {
     $this->travelTo('2030-05-01 12:00:00');
     $ticketType = TicketType::factory()->create(['capacity' => 10]);
     reserveTickets($ticketType, 4, OrderStatus::Pending, now()->subSeconds($secondsAgo));
@@ -104,8 +104,8 @@ test('remaining counts a pending order up to exactly 15 minutes old but not olde
 })->with([
     'just created' => [0, 6],
     'one minute old' => [60, 6],
-    'exactly 15 minutes old' => [900, 6],
-    'one second past 15 minutes' => [901, 10],
+    'exactly 30 minutes old' => [1800, 6],
+    'one second past 30 minutes' => [1801, 10],
     'an hour old' => [3600, 10],
 ]);
 

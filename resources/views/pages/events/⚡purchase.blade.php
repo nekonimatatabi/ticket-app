@@ -4,11 +4,13 @@ use App\Exceptions\PurchaseException;
 use App\Models\Event;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Services\CheckoutService;
 use App\Services\OrderService;
 use Illuminate\Support\Collection;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
+use Stripe\Exception\ApiErrorException;
 
 new #[Title('購入手続き')] class extends Component {
     public Event $event;
@@ -79,7 +81,8 @@ new #[Title('購入手続き')] class extends Component {
     }
 
     /**
-     * 注文（支払い待ち）を作り、受付完了の画面へ進む。買えない場合は理由を表示する。
+     * 注文（支払い待ち）を作り、Stripe の決済ページへ進む。合計 0 円なら Stripe を通さず完了画面へ進む。
+     * 買えない場合は理由を表示する。決済ページを開けなかった場合は、注文を取り消して枠を戻し、選んだ枚数は残す（もう一度押せる）。
      */
     public function proceedToPayment(): void
     {
@@ -104,9 +107,26 @@ new #[Title('購入手続き')] class extends Component {
             return;
         }
 
+        if ($order->total_amount === 0) {
+            session()->forget("purchase.{$this->event->id}");
+
+            $this->redirectRoute('orders.complete', $order, navigate: true);
+
+            return;
+        }
+
+        try {
+            $checkoutUrl = app(CheckoutService::class)->createSession($order);
+        } catch (ApiErrorException) {
+            app(OrderService::class)->cancel($order);
+            $this->errorMessage = '決済ページを開けませんでした。時間をおいてお試しください。';
+
+            return;
+        }
+
         session()->forget("purchase.{$this->event->id}");
 
-        $this->redirectRoute('orders.complete', $order, navigate: true);
+        $this->redirect($checkoutUrl);
     }
 }; ?>
 

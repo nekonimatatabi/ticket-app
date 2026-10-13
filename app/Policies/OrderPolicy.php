@@ -21,4 +21,16 @@ class OrderPolicy
 
         return Response::denyAsNotFound();
     }
+
+    /**
+     * 支払いを中断できるのは、注文した本人だけ。それ以外には 404（存在しない扱い）を返す。
+     */
+    public function cancel(User $user, Order $order): Response|bool
+    {
+        if ($order->user_id === $user->id) {
+            return true;
+        }
+
+        return Response::denyAsNotFound();
+    }
 }

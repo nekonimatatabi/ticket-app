@@ -5,9 +5,14 @@ use App\Models\Event;
 use App\Models\Order;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Services\CheckoutService;
 use Livewire\Livewire;
 
-test('a guest chooses tickets, logs in, returns to the purchase page, and completes the order', function () {
+beforeEach(function () {
+    $this->mock(CheckoutService::class)->allows('createSession')->andReturn('https://checkout.stripe.com/c/pay/cs_test_dummy');
+});
+
+test('a guest chooses tickets, logs in, returns to the purchase page, and goes to the Stripe checkout page', function () {
     $user = User::factory()->create();
     $event = Event::factory()->published()->create(['title' => '春のマルシェ']);
     $ticketType = TicketType::factory()->for($event)->create(['name' => '一般', 'price' => 3000, 'capacity' => 20]);
@@ -33,10 +38,10 @@ test('a guest chooses tickets, logs in, returns to the purchase page, and comple
         ->assertSee('2枚')
         ->assertSee('6,000円');
 
-    // 支払いへ進むと、注文（支払い待ち）が作られて、完了画面へ進む
+    // 支払いへ進むと、注文（支払い待ち）が作られて、Stripe の決済ページへ進む
     Livewire::test('pages::events.purchase', ['event' => $event])
         ->call('proceedToPayment')
-        ->assertRedirect(route('orders.complete', Order::sole()));
+        ->assertRedirect('https://checkout.stripe.com/c/pay/cs_test_dummy');
 
     expect(Order::sole())
         ->user_id->toBe($user->id)
@@ -49,7 +54,7 @@ test('a guest chooses tickets, logs in, returns to the purchase page, and comple
         ->assertSee('6,000円');
 });
 
-test('a logged-in user can buy from the event page to the completion page', function () {
+test('a logged-in user can go from the event page to the Stripe checkout page', function () {
     $user = User::factory()->create();
     $event = Event::factory()->published()->create();
     $general = TicketType::factory()->for($event)->create(['price' => 1000]);
@@ -67,7 +72,7 @@ test('a logged-in user can buy from the event page to the completion page', func
 
     Livewire::test('pages::events.purchase', ['event' => $event])
         ->call('proceedToPayment')
-        ->assertRedirect(route('orders.complete', Order::sole()));
+        ->assertRedirect('https://checkout.stripe.com/c/pay/cs_test_dummy');
 
     expect(Order::sole()->total_amount)->toBe(2500);
 });
