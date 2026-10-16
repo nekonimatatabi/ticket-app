@@ -30,6 +30,13 @@
                 placeholder="email@example.com"
             />
 
+            <!-- Role -->
+            <flux:radio.group name="role" :label="__('登録の種類')" :value="old('role', 'customer')">
+                @foreach (\App\Enums\UserRole::registrable() as $role)
+                    <flux:radio :value="$role->value" :label="$role->label()" />
+                @endforeach
+            </flux:radio.group>
+
             <!-- Password -->
             <flux:input
                 name="password"

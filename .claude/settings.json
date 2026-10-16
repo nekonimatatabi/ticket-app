@@ -1,0 +1,42 @@
+{
+    "model": "opusplan",
+    "permissions": {
+        "allow": [
+            "Bash(sail artisan:*)",
+            "Bash(./vendor/bin/sail artisan:*)",
+            "Bash(sail test:*)",
+            "Bash(./vendor/bin/sail test:*)",
+            "Bash(sail composer:*)",
+            "Bash(./vendor/bin/sail composer:*)",
+            "Bash(sail npm run build:*)",
+            "Bash(./vendor/bin/sail npm run build:*)",
+            "Bash(sail bin pint:*)",
+            "Bash(./vendor/bin/sail bin pint:*)",
+            "Bash(git status:*)",
+            "Bash(git diff:*)",
+            "Bash(git log:*)",
+            "Bash(git add:*)",
+            "Bash(git commit:*)",
+            "Bash(git switch:*)",
+            "Bash(git checkout -b:*)",
+            "Bash(ls:*)"
+        ],
+        "deny": [
+            "Bash(rm:*)",
+            "Bash(git push --force:*)",
+            "Bash(git push -f:*)",
+            "Bash(git reset --hard:*)",
+            "Bash(sail down -v:*)",
+            "Bash(./vendor/bin/sail down -v:*)",
+            "Bash(sail artisan migrate:fresh:*)",
+            "Bash(./vendor/bin/sail artisan migrate:fresh:*)",
+            "Bash(sail artisan db:wipe:*)",
+            "Bash(./vendor/bin/sail artisan db:wipe:*)",
+            "Bash(cat .env:*)",
+            "Bash(cat ./.env:*)",
+            "Bash(cat *.env*)",
+            "Read(./.env)",
+            "Read(./.env.*)"
+        ]
+    }
+}
